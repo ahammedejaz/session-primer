@@ -214,7 +214,7 @@ Then go to [Verify it is working](#verify-it-is-working).
 
 Read the [24/7 warning](#choose-where-to-run-it) first. On Windows the daemon runs as a **Task Scheduler** task that starts the script every minute under **Git Bash**, hidden (no console window flashing), and allowed to run on battery.
 
-> **Tested where?** The whole Windows flow — CLI installation, task registration, the hidden launcher actually running a tick — runs in this repo's CI on GitHub's real Windows runners (see the badge at the top). The only part CI cannot do is sign in to an account, which is your browser login. If anything still surprises you, please open an issue.
+> **Tested where?** The whole Windows flow — CLI installation, task registration, Task Scheduler actually running the hidden launcher, the launcher actually running a tick, uninstall — runs in this repo's CI on GitHub's real Windows runners on every push (see the badge at the top). The only part CI cannot do is sign in to an account, which is your browser login. If anything still surprises you, please open an issue.
 
 ### 1. Install Git for Windows
 
