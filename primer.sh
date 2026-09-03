@@ -571,11 +571,11 @@ tick_claude() {
 
     if [ "$FORCE" -eq 0 ] && [ -n "$wend" ] && [ "$now" -lt "$wend" ]; then
         [ "$DRY_RUN" -eq 1 ] && echo "claude: window open until $(fmt_time "$wend") — would do nothing"
-        return
+        return 0
     fi
     if in_backoff claude; then
         [ "$DRY_RUN" -eq 1 ] && echo "claude: recent failure — backing off"
-        return
+        return 0
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
         if [ -z "$wend" ]; then
@@ -629,16 +629,16 @@ tick_codex() {
     # Window tracked open and usage recently read: nothing to do.
     if [ "$FORCE" -eq 0 ] && [ -n "$wend" ] && [ "$now" -lt "$wend" ] && [ "$fresh" -eq 1 ]; then
         [ "$DRY_RUN" -eq 1 ] && echo "codex: window open until $(fmt_time "$wend") — would do nothing"
-        return
+        return 0
     fi
     # Nothing primeable (free plan / not signed in) and checked recently: wait.
     if [ "$FORCE" -eq 0 ] && [ -z "$wend" ] && [ "$fresh" -eq 1 ] && [ -n "$(codex_special_state)" ]; then
         [ "$DRY_RUN" -eq 1 ] && echo "codex: $(codex_special_state)"
-        return
+        return 0
     fi
     if in_backoff codex; then
         [ "$DRY_RUN" -eq 1 ] && echo "codex: recent failure — backing off"
-        return
+        return 0
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "codex: would read usage from the provider (free) and trigger only if no 5h window is open"
@@ -704,3 +704,4 @@ for tool in $TOOLS; do
     fi
     "tick_$tool"
 done
+exit 0   # a quiet tick is success; the loop status must not become the exit code (systemd marks 1 as failed)
