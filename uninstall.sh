@@ -29,6 +29,11 @@ case "$(uname -s)" in
             echo "Removed crontab entries"
         fi
         ;;
+    MINGW*|MSYS*|CYGWIN*)
+        if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' schtasks /Delete /TN session-primer /F >/dev/null 2>&1; then
+            echo "Removed Task Scheduler task session-primer"
+        fi
+        ;;
 esac
 
 rm -rf "$RUNTIME_DIR" && echo "Removed runtime copy $RUNTIME_DIR"

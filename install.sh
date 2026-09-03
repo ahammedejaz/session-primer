@@ -1,8 +1,9 @@
 #!/bin/sh
 # session-primer installer — runs primer.sh as a once-a-minute tick so usage
 # windows chain back-to-back automatically. No times to configure.
-#   macOS : launchd user agent (StartInterval; catches up after sleep)
-#   Linux : systemd user timer (Persistent=true); cron fallback
+#   macOS   : launchd user agent (StartInterval; catches up after sleep)
+#   Linux   : systemd user timer (Persistent=true); cron fallback
+#   Windows : Task Scheduler running the script under Git Bash (run from Git Bash)
 #
 # Usage:
 #   ./install.sh                          # auto-detect tools, interactive
@@ -194,9 +195,46 @@ WantedBy=timers.target"
     fi
 }
 
+# ---- Windows: Task Scheduler, running the script under Git Bash --------------
+install_windows() {
+    command -v schtasks >/dev/null 2>&1 || { echo "error: schtasks not found — run this from Git Bash on Windows" >&2; exit 1; }
+    bash_exe=$(command -v bash)
+    if command -v cygpath >/dev/null 2>&1; then
+        bash_win=$(cygpath -w "$bash_exe")
+        vbs_win=$(cygpath -w "$RUNTIME_DIR/run-hidden.vbs")
+    else
+        bash_win=$bash_exe
+        vbs_win="$RUNTIME_DIR/run-hidden.vbs"
+    fi
+    # wscript launches bash with window style 0 (hidden), so the tick does not
+    # flash a console window every minute. Inside VBScript, quotes are doubled.
+    vbs_line1='Set sh = CreateObject("WScript.Shell")'
+    vbs_line2="sh.Run \"\"\"$bash_win\"\" -l -c \"\"export PATH='$tool_path:\$PATH'; '$RUN_PRIMER'\"\"\", 0, False"
+    task_cmd="wscript.exe \"$vbs_win\""
+
+    mins=$((INTERVAL / 60)); [ "$mins" -lt 1 ] && mins=1
+    echo "==> Task Scheduler: task 'session-primer', every $mins minute(s), hidden"
+    echo "    launcher: $RUNTIME_DIR/run-hidden.vbs"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '%s\n%s\n' "$vbs_line1" "$vbs_line2"
+        echo "schtasks /Create /F /SC MINUTE /MO 1 /TN session-primer /TR '$task_cmd'"
+        return 0
+    fi
+    printf '%s\r\n%s\r\n' "$vbs_line1" "$vbs_line2" > "$RUNTIME_DIR/run-hidden.vbs"
+    # MSYS_NO_PATHCONV stops Git Bash from rewriting /Create-style switches as paths.
+    if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' schtasks /Create /F /SC MINUTE /MO 1 /TN session-primer /TR "$task_cmd" >/dev/null; then
+        echo "==> Created. Verify with: schtasks /Query /TN session-primer"
+        echo "    The task runs while you are logged in. Keep the machine awake (Settings > Power > Sleep: Never)."
+    else
+        echo "error: schtasks failed — try running Git Bash as Administrator" >&2
+        exit 1
+    fi
+}
+
 case "$(uname -s)" in
-    Darwin) install_macos ;;
-    Linux)  install_linux ;;
+    Darwin)               install_macos ;;
+    Linux)                install_linux ;;
+    MINGW*|MSYS*|CYGWIN*) install_windows ;;
     *) echo "error: unsupported OS $(uname -s) — schedule '$PRIMER' every minute manually" >&2; exit 1 ;;
 esac
 

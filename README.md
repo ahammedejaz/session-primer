@@ -2,7 +2,7 @@
 
 Keep your AI coding CLI's **5-hour usage window** permanently chained open, so the next reset is never more than 5 hours away — and never lands in the middle of your deepest task.
 
-Works with **Claude Code** (`claude`) and **OpenAI Codex CLI** (`codex`). Zero dependencies: POSIX shell plus the CLIs you already have. Runs on a free always-on VM, or on your own laptop.
+Works with **Claude Code** (`claude`) and **OpenAI Codex CLI** (`codex`). Runs on a free always-on VM, or on your own Mac, Windows or Linux machine. Zero dependencies beyond the CLIs you already have.
 
 ```
  windows chain forever, with no human involved:
@@ -16,21 +16,19 @@ Works with **Claude Code** (`claude`) and **OpenAI Codex CLI** (`codex`). Zero d
 1. [The problem](#the-problem)
 2. [What it does — and does not do](#what-it-does--and-does-not-do)
 3. [How it works](#how-it-works)
-4. [Full setup on a free always-on VM (recommended)](#full-setup-on-a-free-always-on-vm-recommended)
-   - [Step 1 — Get a free VM on Oracle Cloud](#step-1--get-a-free-vm-on-oracle-cloud)
-   - [Step 2 — Connect over SSH](#step-2--connect-over-ssh)
-   - [Step 3 — Clone and bootstrap](#step-3--clone-and-bootstrap)
-   - [Step 4 — Sign in to Claude and Codex](#step-4--sign-in-to-claude-and-codex)
-   - [Step 5 — Install the daemon](#step-5--install-the-daemon)
-   - [Step 6 — Verify it is working](#step-6--verify-it-is-working)
-5. [Running on your own laptop instead](#running-on-your-own-laptop-instead)
-6. [Day-to-day commands](#day-to-day-commands)
-7. [Configuration reference](#configuration-reference)
-8. [Codex specifics](#codex-specifics)
-9. [Troubleshooting](#troubleshooting)
-10. [Security and privacy](#security-and-privacy)
-11. [FAQ](#faq)
-12. [License](#license)
+4. [Choose where to run it](#choose-where-to-run-it) ← **read the 24/7 warning**
+5. [Setup A — Free always-on VM (recommended)](#setup-a--free-always-on-vm-recommended)
+6. [Setup B — Your own Mac](#setup-b--your-own-mac)
+7. [Setup C — Your own Windows PC](#setup-c--your-own-windows-pc)
+8. [Setup D — Your own Linux machine](#setup-d--your-own-linux-machine)
+9. [Verify it is working](#verify-it-is-working)
+10. [Day-to-day commands](#day-to-day-commands)
+11. [Configuration reference](#configuration-reference)
+12. [Codex specifics](#codex-specifics)
+13. [Troubleshooting](#troubleshooting)
+14. [Security and privacy](#security-and-privacy)
+15. [FAQ](#faq)
+16. [License](#license)
 
 ---
 
@@ -45,19 +43,19 @@ The window is anchored to *any* message — including one sent by a script at 4:
 **Does:**
 - Sends one trivial, nearly-free prompt (`"Reply with exactly: ok"` on the cheapest model) each time a 5-hour window expires, which starts the next one immediately.
 - Reads the provider's **own** reset time after each trigger, so it always knows exactly when the next one is due. Nothing is estimated.
-- Runs unattended forever from a 60-second timer, survives reboots, and shows you what it is doing (`--status`, a live `--watch` dashboard, and a log).
+- Runs unattended from a 60-second timer, survives reboots, and shows you what it is doing (`--status`, a live `--watch` dashboard, and a log).
 - Costs about 5 tiny prompts per day per tool.
 
 **Does not:**
 - **Give you more quota.** Max/Pro/Plus plans have separate weekly caps that reset on a fixed schedule regardless of session windows. This only shifts *when* 5-hour resets land.
-- Work while the machine running it is asleep or off. That is why an always-on VM is recommended (see below).
+- **Work while the machine running it is asleep or off.** See [Choose where to run it](#choose-where-to-run-it).
 - Touch your credentials or send them anywhere. It runs the official CLIs on a machine *you* signed in on. There is no service, no server, no account — see [Security and privacy](#security-and-privacy).
 
 **Terms-of-service note.** Anthropic's and OpenAI's limits language assumes "ordinary usage." Timing your own single account's windows is not explicitly prohibited, but not explicitly blessed either. Use your judgment; never combine this with credential sharing or multi-account schemes.
 
 ## How it works
 
-A scheduler (launchd on macOS, a systemd user timer on Linux, cron as fallback) runs `primer.sh` once a minute. Each run is a "tick":
+A scheduler (launchd on macOS, a systemd user timer on Linux, Task Scheduler on Windows, cron as fallback) runs `primer.sh` once a minute. Each run is a "tick":
 
 **Claude Code**
 1. If the tracked window is still open → do nothing (silent, free).
@@ -75,15 +73,30 @@ A scheduler (launchd on macOS, a systemd user timer on Linux, cron as fallback) 
 
 ---
 
-## Full setup on a free always-on VM (recommended)
+## Choose where to run it
 
-### Why an always-on machine
+> ### ⚠️ The machine running session-primer must be on and awake 24/7
+>
+> The trigger has to be sent by something signed in to your account **at the exact moment a window expires** — typically at night. Nothing can be sent from a laptop that is asleep, shut down, or has its lid closed.
+>
+> If the machine was off or asleep at a boundary, **nothing breaks — but nothing was primed either.** When it comes back, the daemon simply starts fresh: it probes the provider, adopts whatever window exists, and resumes chaining from that moment. The first window after a downtime is anchored at wake-up time, exactly as if you had typed the first message yourself. You only get the benefit for boundaries the machine was awake for.
+>
+> A laptop that sleeps overnight therefore gives you the benefit **during your working day only** (lunch breaks, meetings), never for the morning window. For the full effect, run it on something that never sleeps.
 
-The trigger has to be sent from something signed in to your account **at the moment a window expires**. A laptop that sleeps overnight cannot do that — the chain pauses while it sleeps and resumes on wake, which gives you no benefit for the first window of the day.
+| Where | Runs 24/7? | Effort | Notes |
+|---|---|---|---|
+| **A. Free always-on VM** (Oracle Cloud Always Free) | Yes | 20 minutes once | Recommended. Covers every device on your account. See [Setup A](#setup-a--free-always-on-vm-recommended) |
+| **B. Your Mac** | Only if you keep it awake | 5 minutes | Plugged in + sleep disabled, or scheduled wake. See [Setup B](#setup-b--your-own-mac) |
+| **C. Your Windows PC** | Only if you keep it awake | 5 minutes | Plugged in + sleep set to Never. See [Setup C](#setup-c--your-own-windows-pc) |
+| **D. Your Linux machine** | Only if you keep it awake | 5 minutes | Same steps as the VM. See [Setup D](#setup-d--your-own-linux-machine) |
 
-Usage windows are **account-wide**, not per-machine. One daemon on one always-on box serves your laptop, your other laptop and your phone. It is legitimate: it is your account, signed in by you, on a machine you control — people run Claude Code on servers all the time.
+Usage windows are **account-wide**, not per-machine: one daemon on one machine serves your laptop, your other laptop and your phone. Run **one daemon per account**. Two do not conflict — each adopts the provider's real reset time — but the second one's triggers are wasted.
 
-Any Linux box works (a Raspberry Pi, an old laptop, any VPS). The steps below use Oracle Cloud's Always Free tier because it costs nothing indefinitely.
+---
+
+## Setup A — Free always-on VM (recommended)
+
+Any Linux box works (a Raspberry Pi, an old laptop, any VPS). These steps use Oracle Cloud's Always Free tier because it costs nothing indefinitely. Running your own CLIs, signed in by you, on a server you control is entirely legitimate — people run Claude Code on servers all the time.
 
 ### Step 1 — Get a free VM on Oracle Cloud
 
@@ -96,7 +109,7 @@ Any Linux box works (a Raspberry Pi, an old laptop, any VPS). The steps below us
 3. Note the instance's **public IP** once it is running.
 
 Two Oracle caveats worth knowing:
-- **Idle reclamation.** Oracle may *stop* an Always-Free instance that stays idle for 7 days (CPU under 20%, network under 20%). This daemon is very idle. If that happens, the instance is stopped, not deleted: open the console, start it, and the chain resumes automatically. Many users report that upgrading the account to Pay-As-You-Go (still $0 for the free shapes) exempts you; Oracle's docs are ambiguous, so treat that as likely rather than guaranteed.
+- **Idle reclamation.** Oracle may *stop* an Always-Free instance that stays idle for 7 days (CPU under 20%, network under 20%). This daemon is very idle. If that happens the instance is stopped, not deleted: open the console, start it, and the chain resumes automatically. Many users report that upgrading the account to Pay-As-You-Go (still $0 for the free shapes) exempts you; Oracle's docs are ambiguous, so treat that as likely rather than guaranteed.
 - **Card verification** occasionally rejects some cards; try another.
 
 ### Step 2 — Connect over SSH
@@ -113,7 +126,7 @@ EOF
 ssh oci
 ```
 
-(Oracle's Ubuntu images use the user `ubuntu`; the user has passwordless `sudo`.)
+(Oracle's Ubuntu images use the user `ubuntu`, which has passwordless `sudo`.)
 
 ### Step 3 — Clone and bootstrap
 
@@ -132,9 +145,7 @@ cd session-primer
 - installs **Codex CLI** as a standalone binary from OpenAI's official GitHub release for your CPU architecture (no Node.js needed);
 - puts `~/.local/bin` on your PATH for future shells.
 
-Skip a CLI you do not use with `--skip-codex` or `--skip-claude`. Prefer doing it by hand? The commands above are the entire script.
-
-Open a new shell afterwards (or `source ~/.bashrc`) so `claude` and `codex` are on PATH.
+Skip a CLI you do not use with `--skip-codex` or `--skip-claude`. Open a new shell afterwards (or `source ~/.bashrc`) so `claude` and `codex` are on PATH.
 
 ### Step 4 — Sign in to Claude and Codex
 
@@ -143,11 +154,7 @@ Both CLIs support signing in on a machine with no browser: they print a URL you 
 ```sh
 claude auth login
 ```
-Choose the subscription login (not an API key — API keys are pay-per-token and have no 5-hour window, which defeats the purpose). Open the printed URL on any device, sign in, and **paste the code it gives you back into the VM terminal**. Verify:
-
-```sh
-claude auth status      # "loggedIn": true, "subscriptionType": "max" (or pro)
-```
+Choose the subscription login (not an API key — API keys are pay-per-token and have no 5-hour window, which defeats the purpose). Open the printed URL on any device, sign in, and **paste the code it gives you back into the VM terminal**. Verify with `claude auth status` — you want `"loggedIn": true` and your `subscriptionType`.
 
 ```sh
 codex login --device-auth
@@ -163,7 +170,7 @@ Only have one of the two? Sign in to that one; the daemon handles a missing or u
 ```
 
 What it does:
-- writes `~/.config/session-primer/primer.conf` (tools, models — you can edit it any time; it is never overwritten);
+- writes `~/.config/session-primer/primer.conf` (tools, models — editable any time; never overwritten);
 - copies `primer.sh` to `~/.local/share/session-primer/` and runs the daemon from there, so you can move or delete the clone without breaking it;
 - creates a **systemd user timer** (`session-primer.timer`, every 60 s, `Persistent=true` so a missed tick runs after a reboot) with the CLI locations baked into its PATH;
 - enables **lingering** for your user (`loginctl enable-linger`) — essential on a server: without it, user timers only run while you are logged in over SSH.
@@ -174,7 +181,127 @@ If you use Codex with a ChatGPT-account login, set the trigger model now (see [C
 nano ~/.config/session-primer/primer.conf     # CODEX_MODEL="gpt-5.4-mini"  CODEX_EFFORT="low"
 ```
 
-### Step 6 — Verify it is working
+Then jump to [Verify it is working](#verify-it-is-working). From your laptop, at any time:
+
+```sh
+ssh oci ~/session-primer/primer.sh --status          # one-shot
+ssh -t oci ~/session-primer/primer.sh --watch        # live dashboard (ctrl+c exits)
+```
+
+---
+
+## Setup B — Your own Mac
+
+Read the [24/7 warning](#choose-where-to-run-it) first. On a Mac the daemon runs as a launchd user agent; it starts at login and ticks every minute, but **pauses whenever the Mac sleeps**.
+
+### 1. Install the CLIs you use
+
+```sh
+curl -fsSL https://claude.ai/install.sh | bash     # Claude Code (official installer)
+npm install -g @openai/codex                       # Codex (needs Node.js; or: brew install codex)
+```
+
+### 2. Sign in
+
+```sh
+claude auth login      # opens your browser; choose the subscription login, not an API key
+codex login            # opens your browser
+```
+
+Verify with `claude auth status` and `codex login status`.
+
+### 3. Clone and install
+
+```sh
+git clone https://github.com/ahammedejaz/session-primer.git
+cd session-primer
+./install.sh                     # auto-detects which CLIs you have; or --tools "claude"
+```
+
+This creates `~/Library/LaunchAgents/com.session-primer.plist` (60-second `StartInterval`, starts at login) and runs a copy of the script from `~/.local/share/session-primer/`. The copy matters: launchd agents cannot read `~/Documents` (macOS privacy protection), so a job pointing into a clone under Documents fails with "Operation not permitted". The installer also bakes the CLI locations into the job's PATH, because launchd does not use your shell's PATH.
+
+Using Codex with a ChatGPT-account login? Set `CODEX_MODEL` in `~/.config/session-primer/primer.conf` — see [Codex specifics](#codex-specifics).
+
+### 4. Keep the Mac awake — this is the whole game
+
+Pick one:
+
+- **Plugged in, lid open, screen off:** *System Settings → Battery → Options → "Prevent automatic sleeping on power adapter when the display is off"* → on. The daemon then ticks all night. A closed lid still sleeps a MacBook unless it is in clamshell mode (external display + power).
+- **Scheduled wake:** `sudo pmset repeat wakeorpoweron MTWRFSU 04:00:00` wakes the Mac at 4:00 every day; the tick fires within a minute, and the Mac dozes off again. Combined with the chain, this reproduces a fixed "4 AM trigger" plus normal chaining while you work. Needs power connected.
+- **Temporary:** `caffeinate -s` in a terminal keeps the Mac awake while plugged in until you close it.
+
+Without one of these, expect the chain to pause overnight and restart fresh when you open the lid — no harm, no morning benefit.
+
+Then go to [Verify it is working](#verify-it-is-working).
+
+---
+
+## Setup C — Your own Windows PC
+
+Read the [24/7 warning](#choose-where-to-run-it) first. On Windows the daemon runs as a **Task Scheduler** task that starts the script every minute under **Git Bash**, hidden (no console window flashing).
+
+> **Status:** the Windows path was written carefully but has **not yet been verified on a real Windows machine by the author**. If you try it, please open an issue with what happened — including "it just worked".
+
+### 1. Prerequisites
+
+- **Git for Windows** — [git-scm.com/download/win](https://git-scm.com/download/win). This provides **Git Bash**, which runs the scripts. Claude Code on Windows requires it anyway.
+- **Node.js** (LTS) — only if you want Codex, which installs through npm.
+
+### 2. Install the CLIs you use
+
+In **PowerShell**:
+
+```powershell
+irm https://claude.ai/install.ps1 | iex        # Claude Code (official installer)
+npm install -g @openai/codex                   # Codex
+```
+
+Close and reopen your terminal so the new commands are on PATH.
+
+### 3. Sign in
+
+```powershell
+claude auth login      # opens your browser; choose the subscription login, not an API key
+codex login            # opens your browser
+```
+
+Verify with `claude auth status` and `codex login status`.
+
+### 4. Clone and install — from Git Bash
+
+Open **Git Bash** (Start menu → "Git Bash"), then:
+
+```sh
+git clone https://github.com/ahammedejaz/session-primer.git
+cd session-primer
+./install.sh                     # auto-detects which CLIs you have; or --tools "claude"
+```
+
+This copies the script to `~/.local/share/session-primer/`, writes a tiny `run-hidden.vbs` launcher there, and registers a Task Scheduler task named `session-primer` that runs the launcher every minute. The launcher starts Git Bash invisibly with the CLI locations on PATH. The task runs **while you are logged in** (no password storage needed). If `schtasks` is refused, run Git Bash as Administrator once.
+
+Using Codex with a ChatGPT-account login? Set `CODEX_MODEL` in `~/.config/session-primer/primer.conf` — see [Codex specifics](#codex-specifics).
+
+### 5. Keep the PC awake — this is the whole game
+
+*Settings → System → Power & battery → Screen, sleep & hibernate timeouts* → set **"Make my device sleep after"** to **Never** when plugged in (screen off is fine). Closing a laptop lid usually sleeps it: *Control Panel → Power Options → Choose what closing the lid does* → **Do nothing** when plugged in.
+
+Without this, the chain pauses whenever the PC sleeps and restarts fresh when it wakes.
+
+### 6. Verify
+
+In Git Bash: `./primer.sh --status`. In PowerShell or cmd: `schtasks /Query /TN session-primer` should show the task with a next run time about a minute away. Then see [Verify it is working](#verify-it-is-working).
+
+**Alternative:** if you already use WSL2, the Linux instructions (Setup D) work inside it, but WSL's own lifecycle (it stops when idle) makes the Git Bash route more reliable.
+
+---
+
+## Setup D — Your own Linux machine
+
+Read the [24/7 warning](#choose-where-to-run-it) first. Then follow [Setup A, Steps 3–5](#step-3--clone-and-bootstrap) on the machine itself (skip the timezone command if it is already right). `setup-vm.sh` works on any Debian/Ubuntu-style desktop; on other distributions install the two CLIs by hand first. Disable suspend in your desktop's power settings (or `sudo systemctl mask sleep.target suspend.target`).
+
+---
+
+## Verify it is working
 
 ```sh
 ./primer.sh --status
@@ -192,42 +319,17 @@ Last log entries:
 2026-09-03 16:56:31 claude: trigger OK — provider says window resets 2026-09-03 21:20 (5h used 14%, weekly 6%)
 ```
 
-Cross-check against the source of truth: in Claude Code on your laptop run `/usage` — the 5-hour reset time should match what the daemon reports, to the minute.
+Cross-check against the source of truth: in Claude Code run `/usage` — the 5-hour reset time should match what the daemon reports, to the minute.
 
-Confirm the timer itself:
+Confirm the scheduler itself:
 
-```sh
-systemctl --user list-timers session-primer.timer   # NEXT about a minute away, LAST about a minute ago
-```
-
-Then leave it alone. The proof comes at the first expiry: the log gains a `trigger OK — provider says window resets …` line five hours later, for a message you never typed. From your laptop, at any time:
-
-```sh
-ssh oci ~/session-primer/primer.sh --status          # one-shot
-ssh -t oci ~/session-primer/primer.sh --watch        # live dashboard (ctrl+c exits)
-```
-
----
-
-## Running on your own laptop instead
-
-If you would rather not use a VM, the same installer works locally — with the sleep caveat above.
-
-```sh
-git clone https://github.com/ahammedejaz/session-primer.git
-cd session-primer
-./install.sh
-```
-
-| Platform | Scheduler | Sleep / off behavior |
+| Platform | Command | Healthy output |
 |---|---|---|
-| macOS | launchd user agent (`~/Library/LaunchAgents/com.session-primer.plist`) | Ticks pause during sleep, resume on wake |
-| Linux with systemd | systemd user timer, `Persistent=true` | Missed tick runs at boot |
-| Linux without systemd | crontab, every minute | Resumes when the machine is back |
+| Linux | `systemctl --user list-timers session-primer.timer` | `NEXT` about a minute away, `LAST` about a minute ago |
+| macOS | `launchctl print gui/$(id -u)/com.session-primer \| grep -E 'runs\|last exit'` | `last exit code = 0`, `runs` increasing |
+| Windows | `schtasks /Query /TN session-primer` | Status `Ready`, next run time about a minute away |
 
-**macOS notes.** The installer copies `primer.sh` to `~/.local/share/session-primer/` because launchd agents cannot read `~/Documents` (privacy protection — the tick fails with "Operation not permitted" otherwise). To keep the chain alive overnight, either leave the Mac plugged in with *System Settings → Battery → Options → "Prevent automatic sleeping on power adapter when the display is off"*, or schedule a daily wake with `sudo pmset repeat wakeorpoweron MTWRFSU 04:00:00`. A closed lid still sleeps a MacBook unless it is in clamshell mode with an external display.
-
-Run **one daemon per account**. Two (say, laptop and VM) do not conflict — each adopts the provider's real reset time — but the second one's triggers are wasted.
+Then leave it alone. The proof comes at the first expiry: the log gains a `trigger OK — provider says window resets …` line five hours later, for a message you never typed. `./primer.sh --watch` shows it live.
 
 ---
 
@@ -247,6 +349,8 @@ tail -f ~/.local/state/session-primer/primer.log   # watch events as they happen
 The log records only events — triggers, probes, adopted windows, failures. Silent ticks are not logged, so a quiet log during an open window is normal.
 
 **Changing settings:** edit `~/.config/session-primer/primer.conf`; it takes effect on the next tick. No reinstall needed. Re-run `./install.sh` only after pulling a new version of the scripts (it refreshes the running copy).
+
+**Updating:** `git pull && ./install.sh`.
 
 **Uninstall:**
 
@@ -286,15 +390,18 @@ Files: state in `~/.local/state/session-primer/` (`window-end-*`, `rate-*`, `cod
 | Symptom | Cause | Fix |
 |---|---|---|
 | `trigger FAILED` in the log; `last-claude.out` mentions authentication | Login expired (password change, "sign out everywhere", token revoked) | `claude auth login` on that machine; the next tick recovers |
-| `codex: cannot read usage — … authentication required` | Codex not signed in on this machine | `codex login --device-auth`, then `./primer.sh --sync` |
+| `codex: cannot read usage — … authentication required` | Codex not signed in on this machine | `codex login --device-auth` (or `codex login` on a desktop), then `./primer.sh --sync` |
 | `codex: … this plan has no 5-hour window` | Free ChatGPT plan | Nothing to fix; upgrade when you want Codex primed |
 | Codex: `model is not supported when using Codex with a ChatGPT account` | Trigger model not allowed for your login | Set `CODEX_MODEL` per Codex specifics above |
-| `window EXPIRED` persists for minutes; timer `NEXT` shows `n/a` | Timer not running — usually lingering is off or a reboot before it was enabled | `sudo loginctl enable-linger $USER`, then `./install.sh` |
-| `systemctl --user` says "Failed to connect to bus" over SSH | Missing runtime dir in a non-login shell | `export XDG_RUNTIME_DIR=/run/user/$(id -u)` |
+| Chain "restarts fresh" every morning | The machine slept or was off overnight — expected | Keep it awake (see your Setup section) or move to a VM |
+| Linux: `window EXPIRED` persists; timer `NEXT` shows `n/a` | Timer not running — usually lingering is off or a reboot before it was enabled | `sudo loginctl enable-linger $USER`, then `./install.sh` |
+| Linux: `systemctl --user` says "Failed to connect to bus" over SSH | Missing runtime dir in a non-login shell | `export XDG_RUNTIME_DIR=/run/user/$(id -u)` |
 | macOS: `/bin/sh: … primer.sh: Operation not permitted` | The job points at a script inside `~/Documents` (privacy-protected) | Re-run `./install.sh` — current versions run a copy from `~/.local/share` |
 | macOS: `claude: CLI not found on PATH` in the log | launchd's minimal PATH | Re-run `./install.sh`; it bakes the CLI locations into the plist |
+| Windows: `schtasks` access denied during install | Task creation refused for the current user | Run Git Bash as Administrator once, re-run `./install.sh` |
+| Windows: task exists but nothing ever happens | Git Bash path or PATH inside the hidden launcher is wrong | Run `~/.local/share/session-primer/primer.sh` from Git Bash by hand and read the error; then open an issue |
 | Oracle instance stopped by itself | Idle reclamation | Start it from the Oracle console; consider upgrading to Pay-As-You-Go |
-| `--status` shows a reset time that disagrees with `/usage` | Should not happen after the first probe; possible right after a long outage | `./primer.sh --sync` |
+| `--status` disagrees with `/usage` | Should not happen after the first probe; possible right after a long outage | `./primer.sh --sync` |
 | Log shows `no rate_limit_event in response` | Claude Code changed its stream-json output | Daemon falls back to "trigger time + 5h"; please open an issue |
 
 Raw outputs of the last trigger per tool are kept in `~/.local/state/session-primer/last-<tool>.out` for diagnosis.
@@ -304,11 +411,15 @@ Raw outputs of the last trigger per tool are kept in `~/.local/state/session-pri
 - **Your credentials never leave your machine.** session-primer runs the official `claude` and `codex` binaries under your own login on a machine you signed in on. It has no server component, no accounts, no telemetry, and makes no network requests of its own.
 - Do **not** turn this into a hosted service that takes other people's logins. That means holding OAuth tokens with full access to their accounts, it violates both providers' terms (credential sharing; subscription OAuth is restricted to the providers' own clients), and a datacenter IP firing prompts across many accounts is exactly what anti-abuse systems flag — the users get banned. Everyone should run their own copy.
 - The trigger runs from an empty directory with MCP servers and project settings disabled, so it cannot see or touch any of your projects.
-- Keep the VM's SSH key safe: whoever can log into the VM can use your CLI logins.
+- On a VM, keep the SSH key safe: whoever can log into the VM can use your CLI logins.
 
 ## FAQ
 
 **Do I need Claude Code or Codex open in a terminal?** No. The daemon spawns a short-lived headless process (`claude -p …`) that sends one message and exits. Nothing visible, nothing to keep open.
+
+**Does my laptop have to stay on?** If the daemon runs on it, yes — 24/7, awake. That is the one hard requirement, and it is why the VM option exists. If it runs on a VM, your laptop can do whatever it likes.
+
+**What happens if the machine was off at a boundary?** Nothing bad. When it comes back, the daemon probes the provider and resumes chaining from that moment. The window during the downtime was simply never primed — the first window after wake-up is anchored then, as if you had typed the first message yourself.
 
 **Does this give me more usage?** No. Weekly caps are unchanged. It only controls *when* the 5-hour reset lands.
 
@@ -317,8 +428,6 @@ Raw outputs of the last trigger per tool are kept in `~/.local/state/session-pri
 **What if I work through a boundary?** Nothing special. Your messages land in whatever window is open; when it expires, the daemon (or your next message, whichever is first) starts the next one, and the daemon reads the real reset time either way.
 
 **Can this run as a Claude Code plugin?** Not on its own: plugins only execute while Claude Code is running, so they cannot fire a trigger while you sleep. A plugin can add conveniences on top (status commands, precise timestamps from hooks), but the always-on tick stays.
-
-**Which is cheaper, running it on a laptop or a VM?** Same token cost. The VM just never sleeps.
 
 ## License
 

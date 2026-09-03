@@ -339,6 +339,12 @@ daemon_state() {
             else
                 printf 'NOT LOADED — run ./install.sh'
             fi ;;
+        MINGW*|MSYS*|CYGWIN*)
+            if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' schtasks /Query /TN session-primer >/dev/null 2>&1; then
+                printf 'running — Task Scheduler ticks every 60s while you are logged in'
+            else
+                printf 'NOT LOADED — run ./install.sh from Git Bash'
+            fi ;;
         *) printf 'unknown platform' ;;
     esac
 }
