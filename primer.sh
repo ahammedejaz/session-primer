@@ -368,8 +368,8 @@ doctor() {
     _now=$(date +%s)
     for t in $TOOLS; do
         _we=$(read_epoch_file "$STATE_DIR/window-end-$t")
-        if [ -n "$_we" ] && [ "$_now" -lt "$_we" ]; then ok "$t window tracked: open until $(fmt_time "$_we")"
-        elif [ "$t" = codex ] && [ -n "$(codex_special_state)" ]; then warn "codex: $(codex_special_state)"
+        if [ "$t" = codex ] && [ -n "$(codex_special_state)" ]; then warn "codex: $(codex_special_state)"
+        elif [ -n "$_we" ] && [ "$_now" -lt "$_we" ]; then ok "$t window tracked: open until $(fmt_time "$_we")"
         elif [ -n "$_we" ]; then warn "$t window expired at $(fmt_time "$_we") — the next tick should trigger"
         else warn "$t: no window tracked yet — the next tick probes the provider"; fi
         _lf=$(read_epoch_file "$STATE_DIR/last-fail-$t")
@@ -627,6 +627,7 @@ tick_codex() {
     case "$CX_STATE" in
         unavailable)
             date +%s > "$fail_file"
+            rm -f "$wend_file"   # a tracked window means nothing without a working login
             log "codex: cannot read usage — $CX_ERR. Sign in on this machine with: codex login --device-auth (retry in $((FAIL_RETRY_SECS / 60))m, or run --sync)"
             return ;;
         no-5h-window)
