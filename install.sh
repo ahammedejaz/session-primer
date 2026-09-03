@@ -264,7 +264,9 @@ install_windows() {
     # wscript launches Git Bash with window style 0 (hidden), so the tick never
     # flashes a console window. Inside a VBScript string, quotes are doubled.
     vbs1='Set sh = CreateObject("WScript.Shell")'
-    vbs2='sh.Run """'"$bash_win"'"" -l -c ""export PATH='"'"$tool_path"':$PATH'"'; '"'"$RUN_PRIMER"'"'""", 0, False'
+    # \$PATH must reach bash unexpanded so the launcher appends the user's PATH at run time.
+    inner="export PATH='$tool_path:\$PATH'; '$RUN_PRIMER'"
+    vbs2="sh.Run \"\"\"$bash_win\"\" -l -c \"\"$inner\"\"\", 0, False"
 
     # Register-ScheduledTask instead of schtasks: lets us allow running on
     # battery (schtasks defaults to AC-only, which silently stops laptops).
