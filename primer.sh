@@ -19,7 +19,7 @@
 
 set -u
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/session-primer"
 CONFIG_FILE="$CONFIG_DIR/primer.conf"
@@ -42,12 +42,16 @@ RATE_REFRESH_SECS=300                # codex: re-read provider usage this often 
 
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 
+export PATH="$HOME/.local/bin:$PATH"
+[ -n "${APPDATA:-}" ] && [ -d "$APPDATA/npm" ] && export PATH="$APPDATA/npm:$PATH"
+
 mkdir -p "$STATE_DIR" "$BLANK_DIR"
 
 DRY_RUN=0
 FORCE=0
 ONLY_TOOL=""
 SHOW_STATUS=0
+DOCTOR=0
 WATCH=0
 WATCH_ONCE=0
 SET_TOOL=""
@@ -66,6 +70,7 @@ Options:
   --force          Alias of --sync
   --tool NAME      Only handle one tool (claude or codex)
   --status         Show window state per tool and recent log entries
+  --doctor         Check CLIs, sign-in, scheduler and heartbeat; explain any problem
   --watch          Live dashboard — visualize windows and triggers (ctrl+c exits)
   --set-end TOOL HH:MM
                    Manually override the tracked window end (rarely needed)
@@ -82,6 +87,7 @@ while [ $# -gt 0 ]; do
         --force|--sync) FORCE=1 ;;
         --tool)    ONLY_TOOL="${2:-}"; shift ;;
         --status)  SHOW_STATUS=1 ;;
+        --doctor)  DOCTOR=1 ;;
         --watch)   WATCH=1 ;;
         --watch-once) WATCH_ONCE=1 ;;
         --set-end) SET_TOOL="${2:-}"; SET_TIME="${3:-}"; shift 2 ;;
@@ -125,6 +131,15 @@ read_epoch_file() {
 }
 
 pct() { awk "BEGIN { printf \"%d\", (${1:-0}) * 100 + 0.5 }"; }
+
+claude_signed_in() { claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; }
+codex_signed_in()  { codex login status 2>&1 | grep -qi '^logged in'; }
+
+# Seconds since the daemon last ticked, or empty if it never has.
+tick_age() {
+    _lt=$(read_epoch_file "$STATE_DIR/last-tick")
+    [ -n "$_lt" ] && echo $(( $(date +%s) - _lt ))
+}
 
 if [ -n "$SET_TOOL" ]; then
     case "$SET_TOOL" in claude|codex) ;; *) echo "error: --set-end expects claude or codex" >&2; exit 2 ;; esac
@@ -273,6 +288,12 @@ status() {
     echo "Config file : $CONFIG_FILE $( [ -f "$CONFIG_FILE" ] && echo '(present)' || echo '(not created — using defaults)')"
     echo "Tools       : $TOOLS"
     echo "Claude model: $CLAUDE_MODEL"
+    _age=$(tick_age)
+    if [ -n "$_age" ]; then
+        if [ "$_age" -lt 180 ]; then echo "Daemon      : alive — last tick ${_age}s ago"; else echo "Daemon      : NOT TICKING — last tick $((_age / 60))m ago (run ./primer.sh --doctor)"; fi
+    else
+        echo "Daemon      : no tick recorded yet (run ./install.sh)"
+    fi
     echo
     _now=$(date +%s)
     for t in $TOOLS; do
@@ -304,6 +325,66 @@ status() {
     fi
 }
 
+doctor() {
+    _fail=0
+    ok()   { printf '  [ok]   %s\n' "$*"; }
+    bad()  { printf '  [FAIL] %s\n' "$*"; _fail=1; }
+    warn() { printf '  [warn] %s\n' "$*"; }
+    echo "session-primer $VERSION — doctor"
+    echo
+    if [ -f "$CONFIG_FILE" ]; then ok "config: $CONFIG_FILE (tools: $TOOLS)"; else warn "config not created yet — using defaults (tools: $TOOLS); ./install.sh writes it"; fi
+    if [ -w "$STATE_DIR" ]; then ok "state dir writable: $STATE_DIR"; else bad "state dir not writable: $STATE_DIR"; fi
+    for t in $TOOLS; do
+        if _p=$(command -v "$t" 2>/dev/null); then
+            ok "$t found: $_p ($("$t" --version 2>/dev/null | head -n 1))"
+            if "${t}_signed_in"; then
+                ok "$t signed in"
+            elif [ "$t" = claude ]; then
+                bad "$t NOT signed in — run: claude auth login   (choose the subscription login)"
+            else
+                bad "$t NOT signed in — run: codex login   (headless: codex login --device-auth)"
+            fi
+        else
+            bad "$t not found on PATH — run ./setup.sh"
+        fi
+    done
+    case "$(uname -s)" in
+        Darwin)
+            if launchctl print "gui/$(id -u)/com.session-primer" >/dev/null 2>&1; then ok "scheduler: launchd agent loaded"; else bad "scheduler: launchd agent not loaded — run ./install.sh"; fi ;;
+        Linux)
+            export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+            if systemctl --user is-active session-primer.timer >/dev/null 2>&1; then
+                ok "scheduler: systemd user timer active"
+                if loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then ok "lingering enabled (timer survives logout)"; else warn "lingering NOT enabled — timer stops when you log out: sudo loginctl enable-linger $USER"; fi
+            elif crontab -l 2>/dev/null | grep -q '# session-primer$'; then ok "scheduler: cron entry present"
+            else bad "scheduler: no systemd timer or cron entry — run ./install.sh"; fi ;;
+        MINGW*|MSYS*|CYGWIN*)
+            if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' schtasks /Query /TN session-primer >/dev/null 2>&1; then ok "scheduler: Task Scheduler task present"; else bad "scheduler: task 'session-primer' missing — run ./install.sh from Git Bash"; fi ;;
+    esac
+    _age=$(tick_age)
+    if [ -z "$_age" ]; then warn "heartbeat: no tick recorded yet (the scheduler ticks within a minute of install)"
+    elif [ "$_age" -lt 180 ]; then ok "heartbeat: last tick ${_age}s ago"
+    else bad "heartbeat: last tick $((_age / 60))m ago — the scheduler is not running the script (see README troubleshooting)"; fi
+    _now=$(date +%s)
+    for t in $TOOLS; do
+        _we=$(read_epoch_file "$STATE_DIR/window-end-$t")
+        if [ -n "$_we" ] && [ "$_now" -lt "$_we" ]; then ok "$t window tracked: open until $(fmt_time "$_we")"
+        elif [ "$t" = codex ] && [ -n "$(codex_special_state)" ]; then warn "codex: $(codex_special_state)"
+        elif [ -n "$_we" ]; then warn "$t window expired at $(fmt_time "$_we") — the next tick should trigger"
+        else warn "$t: no window tracked yet — the next tick probes the provider"; fi
+        _lf=$(read_epoch_file "$STATE_DIR/last-fail-$t")
+        [ -n "$_lf" ] && warn "$t: last attempt failed at $(fmt_time "$_lf") — see $STATE_DIR/last-$t.out"
+    done
+    echo
+    if [ "$_fail" -eq 0 ]; then echo "All checks passed."; else echo "Problems found — fix the [FAIL] lines above."; fi
+    return $_fail
+}
+
+if [ "$DOCTOR" -eq 1 ]; then
+    doctor
+    exit $?
+fi
+
 if [ "$SHOW_STATUS" -eq 1 ]; then
     status
     exit 0
@@ -325,23 +406,29 @@ draw_bar() {
 }
 
 daemon_state() {
+    _age=$(tick_age)
+    if [ -n "$_age" ]; then
+        if [ "$_age" -lt 180 ]; then _hb=" · last tick ${_age}s ago"; else _hb=" · LAST TICK $((_age / 60))m AGO"; fi
+    else
+        _hb=" · no tick yet"
+    fi
     case "$(uname -s)" in
         Darwin)
             if launchctl print "gui/$(id -u)/com.session-primer" >/dev/null 2>&1; then
-                printf 'running — ticks every 60s in the background'
+                printf 'loaded%s' "$_hb"
             else
                 printf 'NOT LOADED — run ./install.sh'
             fi ;;
         Linux)
             if systemctl --user is-active session-primer.timer >/dev/null 2>&1 \
                || crontab -l 2>/dev/null | grep -q '# session-primer$'; then
-                printf 'running — ticks in the background'
+                printf 'loaded%s' "$_hb"
             else
                 printf 'NOT LOADED — run ./install.sh'
             fi ;;
         MINGW*|MSYS*|CYGWIN*)
             if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' schtasks /Query /TN session-primer >/dev/null 2>&1; then
-                printf 'running — Task Scheduler ticks every 60s while you are logged in'
+                printf 'loaded (Task Scheduler)%s' "$_hb"
             else
                 printf 'NOT LOADED — run ./install.sh from Git Bash'
             fi ;;
@@ -448,6 +535,7 @@ trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
 
 # ---- ticks ------------------------------------------------------------------
 now=$(date +%s)
+echo "$now" > "$STATE_DIR/last-tick"
 
 in_backoff() {   # $1 tool
     _lf=$(read_epoch_file "$STATE_DIR/last-fail-$1")

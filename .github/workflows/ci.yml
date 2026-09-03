@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  install-matrix:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Line endings are LF (Windows checkout must not break scripts)
+        run: |
+          for f in *.sh; do
+            if grep -q $'\r' "$f"; then echo "CRLF found in $f"; exit 1; fi
+            sh -n "$f"
+          done
+          echo "all scripts parse and are LF"
+
+      - name: Guided setup installs the CLIs (no login, no daemon yet)
+        run: ./setup.sh --no-login --no-install --no-swap
+
+      - name: CLIs are on PATH
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          claude --version
+          codex --version
+
+      - name: Keep the CI run short (unauthenticated probes fail fast)
+        run: |
+          mkdir -p ~/.config/session-primer
+          printf 'TOOLS="claude codex"\nTIMEOUT_SECS=60\n' > ~/.config/session-primer/primer.conf
+
+      - name: Install the daemon (not signed in, so the first probe must fail loudly, not hang)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          ./install.sh --tools "claude codex" --no-login
+
+      - name: Status, dry-run, dashboard frame, doctor
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          ./primer.sh --status
+          echo "--- dry-run"; ./primer.sh --dry-run
+          echo "--- watch frame"; ./primer.sh --watch-once
+          echo "--- doctor (expected to report NOT signed in)"
+          if ./primer.sh --doctor; then echo "doctor should have failed on sign-in"; exit 1; fi
+          ./primer.sh --doctor | grep -q 'claude NOT signed in'
+          ./primer.sh --doctor | grep -q 'codex NOT signed in'
+
+      - name: The first tick ran and recorded what went wrong
+        run: |
+          echo "--- log"; cat ~/.local/state/session-primer/primer.log
+          test -f ~/.local/state/session-primer/last-tick
+          grep -q 'claude: trigger FAILED' ~/.local/state/session-primer/primer.log
+          grep -q 'codex: cannot read usage' ~/.local/state/session-primer/primer.log
+          echo "--- raw claude output"; head -c 600 ~/.local/state/session-primer/last-claude.out; echo
+
+      - name: Scheduler is registered (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          if systemctl --user list-timers session-primer.timer 2>/dev/null | grep -q session-primer; then
+            echo "systemd user timer present"
+          elif crontab -l | grep -q 'session-primer$'; then
+            echo "cron entry present (systemd user session unavailable on this runner)"
+          else
+            echo "no scheduler registered"; exit 1
+          fi
+
+      - name: Scheduler is registered (macOS)
+        if: runner.os == 'macOS'
+        run: launchctl print "gui/$(id -u)/com.session-primer" | grep -E 'run interval|program' 
+
+      - name: Scheduler is registered and the hidden launcher works (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          MSYS_NO_PATHCONV=1 schtasks /Query /TN session-primer /V /FO LIST | grep -iE 'TaskName|Status|Next Run Time|Task To Run' 
+          echo "--- launcher"; cat ~/.local/share/session-primer/run-hidden.vbs
+          rm -f ~/.local/state/session-primer/last-tick
+          wscript.exe //B "$(cygpath -w ~/.local/share/session-primer/run-hidden.vbs)"
+          for i in $(seq 1 45); do [ -f ~/.local/state/session-primer/last-tick ] && break; sleep 2; done
+          test -f ~/.local/state/session-primer/last-tick && echo "hidden launcher ran the tick"
+          echo "--- schtasks /Run (may not be allowed in a CI session; informational)"
+          rm -f ~/.local/state/session-primer/last-tick
+          MSYS_NO_PATHCONV=1 schtasks /Run /TN session-primer || true
+          for i in $(seq 1 30); do [ -f ~/.local/state/session-primer/last-tick ] && break; sleep 2; done
+          if [ -f ~/.local/state/session-primer/last-tick ]; then echo "Task Scheduler ran the task"; else echo "Task Scheduler did not run the task in this CI session (expected on hosted runners)"; fi
+
+      - name: setup.cmd wrapper finds Git Bash (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: setup.cmd --no-login --no-install --no-swap
+
+      - name: Uninstall removes the scheduler
+        run: |
+          ./uninstall.sh --purge
+          case "$RUNNER_OS" in
+            Linux)   export XDG_RUNTIME_DIR="/run/user/$(id -u)"; ! systemctl --user is-active session-primer.timer >/dev/null 2>&1; ! crontab -l 2>/dev/null | grep -q 'session-primer$' ;;
+            macOS)   ! launchctl print "gui/$(id -u)/com.session-primer" >/dev/null 2>&1 ;;
+            Windows) ! MSYS_NO_PATHCONV=1 schtasks /Query /TN session-primer >/dev/null 2>&1 ;;
+          esac
+          echo "uninstalled cleanly"

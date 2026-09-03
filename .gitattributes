@@ -1,0 +1,6 @@
+# Shell scripts must stay LF even on Windows (Git for Windows defaults to
+# CRLF checkout, which breaks every script with "$'\r': command not found").
+* text=auto eol=lf
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.png binary

@@ -1,14 +1,16 @@
 #!/bin/sh
-# session-primer installer — runs primer.sh as a once-a-minute tick so usage
-# windows chain back-to-back automatically. No times to configure.
+# session-primer installer — schedules primer.sh as a once-a-minute tick so
+# usage windows chain back-to-back automatically. No times to configure.
 #   macOS   : launchd user agent (StartInterval; catches up after sleep)
-#   Linux   : systemd user timer (Persistent=true); cron fallback
-#   Windows : Task Scheduler running the script under Git Bash (run from Git Bash)
+#   Linux   : systemd user timer (Persistent=true, lingering enabled); cron fallback
+#   Windows : Task Scheduler task running the script under Git Bash, hidden
+#             (run this from Git Bash)
 #
 # Usage:
-#   ./install.sh                          # auto-detect tools, interactive
-#   ./install.sh --tools "claude codex"   # non-interactive
+#   ./install.sh                          # auto-detect tools, check sign-in, install
+#   ./install.sh --tools "claude codex"   # explicit tool list
 #   ./install.sh --dry-run                # show what would be installed
+# Flags: --claude-model NAME  --interval SECONDS  --no-login  --no-probe
 
 set -u
 
@@ -17,15 +19,21 @@ PRIMER="$SCRIPT_DIR/primer.sh"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/session-primer"
 CONFIG_FILE="$CONFIG_DIR/primer.conf"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/session-primer"
+LOG_FILE="$STATE_DIR/primer.log"
 RUNTIME_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/session-primer"
 RUN_PRIMER="$RUNTIME_DIR/primer.sh"
-LOG_FILE="$STATE_DIR/primer.log"
 LABEL="com.session-primer"
+
+# The CLIs usually live here; make sure we can see them even from a fresh shell.
+export PATH="$HOME/.local/bin:$PATH"
+[ -n "${APPDATA:-}" ] && [ -d "$APPDATA/npm" ] && export PATH="$APPDATA/npm:$PATH"
 
 TOOLS=""
 CLAUDE_MODEL=""
 INTERVAL=60
 DRY_RUN=0
+DO_LOGIN=1
+DO_PROBE=1
 
 usage() {
     cat <<EOF
@@ -33,6 +41,8 @@ Usage: ./install.sh [options]
   --tools "claude codex"        Which CLIs to keep primed (default: auto-detect)
   --claude-model NAME           Model for the claude trigger (default: haiku)
   --interval SECONDS            Tick interval (default: 60)
+  --no-login                    Do not offer to sign in interactively
+  --no-probe                    Do not run the first tick right away
   --dry-run                     Print what would be installed, change nothing
   -h, --help                    This help
 EOF
@@ -43,6 +53,8 @@ while [ $# -gt 0 ]; do
         --tools)        TOOLS="${2:-}"; shift ;;
         --claude-model) CLAUDE_MODEL="${2:-}"; shift ;;
         --interval)     INTERVAL="${2:-60}"; shift ;;
+        --no-login)     DO_LOGIN=0 ;;
+        --no-probe)     DO_PROBE=0 ;;
         --dry-run)      DRY_RUN=1 ;;
         -h|--help)      usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -53,20 +65,72 @@ done
 [ -x "$PRIMER" ] || { echo "error: $PRIMER not found or not executable" >&2; exit 1; }
 case "$INTERVAL" in *[!0-9]*|'') echo "error: --interval must be a number of seconds" >&2; exit 1 ;; esac
 
-# ---- Auto-detect tools -------------------------------------------------------
+case "$(uname -s)" in
+    Darwin)               OS=mac ;;
+    Linux)                OS=linux ;;
+    MINGW*|MSYS*|CYGWIN*) OS=windows ;;
+    *) echo "error: unsupported OS $(uname -s) — schedule '$PRIMER' every minute manually" >&2; exit 1 ;;
+esac
+
+have() { command -v "$1" >/dev/null 2>&1; }
+claude_signed_in() { claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; }
+codex_signed_in()  { codex login status 2>&1 | grep -qi '^logged in'; }
+
+# ---- Preflight: which tools, are they installed, are they signed in ---------
 detected=""
-command -v claude >/dev/null 2>&1 && detected="claude"
-command -v codex  >/dev/null 2>&1 && detected="$detected codex"
+have claude && detected="claude"
+have codex  && detected="$detected codex"
 detected=$(echo "$detected" | sed 's/^ //')
-[ -n "$detected" ] || { echo "error: neither 'claude' nor 'codex' found on PATH" >&2; exit 1; }
 
 if [ -z "$TOOLS" ] && [ -t 0 ]; then
-    printf "Tools to keep primed [%s]: " "$detected"
-    read -r TOOLS
+    if [ -n "$detected" ]; then
+        printf "Tools to keep primed [%s]: " "$detected"; read -r TOOLS
+    fi
 fi
 [ -n "$TOOLS" ] || TOOLS="$detected"
+[ -n "$TOOLS" ] || { echo "error: neither 'claude' nor 'codex' is installed. Run ./setup.sh first." >&2; exit 1; }
 
-# ---- Build a PATH that includes the CLIs (launchd/systemd strip your shell PATH)
+echo "==> Preflight"
+missing=0
+for t in $TOOLS; do
+    case "$t" in
+        claude|codex) ;;
+        *) echo "    $t: unknown tool (expected claude or codex)" >&2; exit 1 ;;
+    esac
+    if ! have "$t"; then
+        echo "    $t: NOT INSTALLED — run ./setup.sh (or install it yourself), then re-run ./install.sh"
+        missing=1
+        continue
+    fi
+    if "${t}_signed_in"; then
+        echo "    $t: installed, signed in"
+    else
+        echo "    $t: installed, NOT signed in"
+        if [ "$DO_LOGIN" -eq 1 ] && [ -t 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+            printf '        Sign in now? [Y/n] '; read -r ans
+            case "${ans:-Y}" in
+                [Nn]*) ;;
+                *) if [ "$t" = claude ]; then
+                       claude auth login
+                   elif [ "$OS" = linux ] && [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+                       codex login --device-auth
+                   else
+                       codex login
+                   fi ;;
+            esac
+            if "${t}_signed_in"; then echo "    $t: signed in"; else echo "    $t: still not signed in — the daemon will keep reminding you in its status until you do"; fi
+        else
+            if [ "$t" = claude ]; then
+                echo "        The daemon will report 'trigger FAILED' until you run:  claude auth login"
+            else
+                echo "        The daemon will report 'usage unreadable' until you run:  codex login   (headless: codex login --device-auth)"
+            fi
+        fi
+    fi
+done
+[ "$missing" -eq 0 ] || exit 1
+
+# ---- Build a PATH that includes the CLIs (schedulers strip your shell PATH) --
 tool_path="/usr/local/bin:/usr/bin:/bin"
 for cli in claude codex; do
     p=$(command -v "$cli" 2>/dev/null) || continue
@@ -74,22 +138,19 @@ for cli in claude codex; do
     case ":$tool_path:" in *":$d:"*) ;; *) tool_path="$d:$tool_path" ;; esac
 done
 
-# ---- Write config -----------------------------------------------------------
+# ---- Config + runtime copy --------------------------------------------------
 conf_content="# session-primer configuration (sourced by primer.sh)
 TOOLS=\"$TOOLS\"
 CLAUDE_MODEL=\"${CLAUDE_MODEL:-haiku}\"
-# CODEX_MODEL=\"\"            # empty = your codex default
+# CODEX_MODEL=\"\"            # empty = your codex default (see README: Codex specifics)
 # CODEX_EFFORT=\"low\"        # reasoning effort for the codex trigger
 # PROMPT=\"Reply with exactly: ok\"
 # WINDOW_HOURS=5              # provider window length
 # TIMEOUT_SECS=180
 # FAIL_RETRY_SECS=600
-# RATE_REFRESH_SECS=300         # codex: free usage re-read interval"
+# RATE_REFRESH_SECS=300       # codex: free usage re-read interval"
 
-# The job runs a COPY of primer.sh from ~/.local/share, not the repo itself:
-# on macOS, launchd agents cannot read ~/Documents (TCC privacy protection),
-# and this also lets you move or delete the repo without breaking the job.
-echo "==> Runtime:    $RUN_PRIMER (copied from repo)"
+echo "==> Runtime:    $RUN_PRIMER (copy of the repo script; the job runs this)"
 echo "==> Config:     $CONFIG_FILE"
 echo "    Tools:      $TOOLS"
 echo "    Tick every: ${INTERVAL}s"
@@ -106,7 +167,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 # ---- macOS: launchd ---------------------------------------------------------
-install_macos() {
+install_mac() {
     plist="$HOME/Library/LaunchAgents/$LABEL.plist"
     plist_content="<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -123,25 +184,26 @@ install_macos() {
     <key>StandardErrorPath</key><string>$LOG_FILE</string>
 </dict>
 </plist>"
-
     echo "==> launchd:    $plist"
-    if [ "$DRY_RUN" -eq 1 ]; then
-        printf '%s\n' "$plist_content"
-        return 0
-    fi
+    if [ "$DRY_RUN" -eq 1 ]; then printf '%s\n' "$plist_content"; return 0; fi
+    mkdir -p "$HOME/Library/LaunchAgents"
     printf '%s\n' "$plist_content" > "$plist"
     uid=$(id -u)
     launchctl bootout "gui/$uid/$LABEL" 2>/dev/null
     if launchctl bootstrap "gui/$uid" "$plist" 2>/dev/null; then
-        echo "==> Loaded. Verify with: launchctl print gui/$uid/$LABEL | head -20"
+        echo "==> Loaded (launchctl bootstrap)."
+    elif launchctl load -w "$plist" 2>/dev/null; then
+        echo "==> Loaded (launchctl load)."
     else
-        launchctl load -w "$plist" && echo "==> Loaded (legacy launchctl load)."
+        echo "error: launchctl could not load the agent. Try logging out and back in, then re-run ./install.sh" >&2
+        exit 1
     fi
 }
 
 # ---- Linux: systemd user timer, cron fallback -------------------------------
 install_linux() {
-    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    if have systemctl && [ -d /run/systemd/system ] && systemctl --user show-environment >/dev/null 2>&1; then
         unit_dir="$HOME/.config/systemd/user"
         service_content="[Unit]
 Description=session-primer — keep AI CLI usage windows chained open
@@ -162,15 +224,12 @@ Persistent=true
 [Install]
 WantedBy=timers.target"
         echo "==> systemd:    $unit_dir/session-primer.{service,timer}"
-        if [ "$DRY_RUN" -eq 1 ]; then
-            printf '%s\n---\n%s\n' "$service_content" "$timer_content"
-            return 0
-        fi
+        if [ "$DRY_RUN" -eq 1 ]; then printf '%s\n---\n%s\n' "$service_content" "$timer_content"; return 0; fi
         mkdir -p "$unit_dir"
         printf '%s\n' "$service_content" > "$unit_dir/session-primer.service"
         printf '%s\n' "$timer_content"   > "$unit_dir/session-primer.timer"
-        # Without lingering, a user's systemd instance (and its timers) only
-        # runs while that user is logged in — useless on a headless server.
+        # Without lingering, a user's systemd instance (and its timers) only runs
+        # while that user is logged in — useless on a headless server.
         if loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then
             echo "==> Lingering already enabled for $USER"
         elif loginctl enable-linger "$USER" 2>/dev/null || sudo -n loginctl enable-linger "$USER" 2>/dev/null; then
@@ -179,64 +238,84 @@ WantedBy=timers.target"
             echo "!!  Could not enable lingering. Run this once, or the timer stops when you log out:"
             echo "    sudo loginctl enable-linger $USER"
         fi
-        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
         systemctl --user daemon-reload
         systemctl --user enable --now session-primer.timer
         echo "==> Enabled. Verify with: systemctl --user list-timers session-primer.timer"
     else
-        echo "==> cron fallback (ticks every minute; ignores --interval finer than 60s)"
+        have crontab || { echo "error: neither a usable systemd user session nor crontab found" >&2; exit 1; }
+        echo "==> cron:       every minute (systemd user session not available here)"
         cron_line="* * * * * PATH=$tool_path /bin/sh $RUN_PRIMER >/dev/null 2>>$LOG_FILE # session-primer"
-        if [ "$DRY_RUN" -eq 1 ]; then
-            echo "$cron_line"
-            return 0
-        fi
+        if [ "$DRY_RUN" -eq 1 ]; then echo "$cron_line"; return 0; fi
         ( crontab -l 2>/dev/null | grep -v '# session-primer$'; echo "$cron_line" ) | crontab -
         echo "==> Installed. Verify with: crontab -l"
     fi
 }
 
-# ---- Windows: Task Scheduler, running the script under Git Bash --------------
+# ---- Windows: Task Scheduler via PowerShell, running the script under Git Bash
 install_windows() {
-    command -v schtasks >/dev/null 2>&1 || { echo "error: schtasks not found — run this from Git Bash on Windows" >&2; exit 1; }
-    bash_exe=$(command -v bash)
-    if command -v cygpath >/dev/null 2>&1; then
-        bash_win=$(cygpath -w "$bash_exe")
-        vbs_win=$(cygpath -w "$RUNTIME_DIR/run-hidden.vbs")
-    else
-        bash_win=$bash_exe
-        vbs_win="$RUNTIME_DIR/run-hidden.vbs"
-    fi
-    # wscript launches bash with window style 0 (hidden), so the tick does not
-    # flash a console window every minute. Inside VBScript, quotes are doubled.
-    vbs_line1='Set sh = CreateObject("WScript.Shell")'
-    vbs_line2="sh.Run \"\"\"$bash_win\"\" -l -c \"\"export PATH='$tool_path:\$PATH'; '$RUN_PRIMER'\"\"\", 0, False"
-    task_cmd="wscript.exe \"$vbs_win\""
-
+    ps=$(command -v powershell.exe 2>/dev/null || command -v powershell 2>/dev/null || command -v pwsh 2>/dev/null)
+    [ -n "$ps" ] || { echo "error: PowerShell not found — run this from Git Bash on Windows" >&2; exit 1; }
+    have cygpath || { echo "error: cygpath not found — run this from Git Bash (Git for Windows)" >&2; exit 1; }
+    bash_win=$(cygpath -w "$(command -v bash)")
+    vbs="$RUNTIME_DIR/run-hidden.vbs";      vbs_win=$(cygpath -w "$vbs")
+    ps1="$RUNTIME_DIR/register-task.ps1";   ps1_win=$(cygpath -w "$ps1")
     mins=$((INTERVAL / 60)); [ "$mins" -lt 1 ] && mins=1
-    echo "==> Task Scheduler: task 'session-primer', every $mins minute(s), hidden"
-    echo "    launcher: $RUNTIME_DIR/run-hidden.vbs"
+
+    # wscript launches Git Bash with window style 0 (hidden), so the tick never
+    # flashes a console window. Inside a VBScript string, quotes are doubled.
+    vbs1='Set sh = CreateObject("WScript.Shell")'
+    vbs2='sh.Run """'"$bash_win"'"" -l -c ""export PATH='"'"$tool_path"':$PATH'"'; '"'"$RUN_PRIMER"'"'""", 0, False'
+
+    # Register-ScheduledTask instead of schtasks: lets us allow running on
+    # battery (schtasks defaults to AC-only, which silently stops laptops).
+    ps_content="\$ErrorActionPreference = 'Stop'
+\$action   = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '\"$vbs_win\"'
+\$trigger  = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(30) -RepetitionInterval (New-TimeSpan -Minutes $mins) -RepetitionDuration (New-TimeSpan -Days 3650)
+\$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+Register-ScheduledTask -TaskName 'session-primer' -Action \$action -Trigger \$trigger -Settings \$settings -Description 'session-primer: keeps AI coding CLI usage windows chained open' -Force | Out-Null
+Write-Output 'registered'"
+
+    echo "==> Task Scheduler: task 'session-primer', every $mins minute(s), hidden, allowed on battery"
+    echo "    launcher:   $vbs"
     if [ "$DRY_RUN" -eq 1 ]; then
-        printf '%s\n%s\n' "$vbs_line1" "$vbs_line2"
-        echo "schtasks /Create /F /SC MINUTE /MO 1 /TN session-primer /TR '$task_cmd'"
+        printf '%s\n%s\n---\n%s\n' "$vbs1" "$vbs2" "$ps_content"
         return 0
     fi
-    printf '%s\r\n%s\r\n' "$vbs_line1" "$vbs_line2" > "$RUNTIME_DIR/run-hidden.vbs"
-    # MSYS_NO_PATHCONV stops Git Bash from rewriting /Create-style switches as paths.
-    if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' schtasks /Create /F /SC MINUTE /MO 1 /TN session-primer /TR "$task_cmd" >/dev/null; then
-        echo "==> Created. Verify with: schtasks /Query /TN session-primer"
-        echo "    The task runs while you are logged in. Keep the machine awake (Settings > Power > Sleep: Never)."
+    printf '%s\r\n%s\r\n' "$vbs1" "$vbs2" > "$vbs"
+    printf '%s\r\n' "$ps_content" > "$ps1"
+    if out=$("$ps" -NoProfile -ExecutionPolicy Bypass -File "$ps1_win" 2>&1) && printf '%s' "$out" | grep -q registered; then
+        echo "==> Registered. Verify with: schtasks /Query /TN session-primer"
+        echo "    Runs while you are logged in. Keep the PC awake: Settings > System > Power > Sleep: Never."
     else
-        echo "error: schtasks failed — try running Git Bash as Administrator" >&2
+        echo "error: could not register the task:" >&2
+        printf '%s\n' "$out" >&2
+        echo "Try again from a Git Bash started with 'Run as administrator'." >&2
         exit 1
     fi
 }
 
-case "$(uname -s)" in
-    Darwin)               install_macos ;;
-    Linux)                install_linux ;;
-    MINGW*|MSYS*|CYGWIN*) install_windows ;;
-    *) echo "error: unsupported OS $(uname -s) — schedule '$PRIMER' every minute manually" >&2; exit 1 ;;
+case "$OS" in
+    mac)     install_mac ;;
+    linux)   install_linux ;;
+    windows) install_windows ;;
 esac
 
-[ "$DRY_RUN" -eq 1 ] && echo "==> Dry run: nothing was installed."
-echo "==> Check state any time with: $PRIMER --status"
+if [ "$DRY_RUN" -eq 1 ]; then
+    echo "==> Dry run: nothing was installed."
+    exit 0
+fi
+
+# ---- First probe + status, so you see it working right away -----------------
+if [ "$DO_PROBE" -eq 1 ]; then
+    echo "==> Sending the first probe to learn your current windows (takes a few seconds)..."
+    PATH="$tool_path:$PATH" "$RUN_PRIMER" || true
+    echo
+    "$RUN_PRIMER" --status
+fi
+cat <<EOF
+
+==> Done. The daemon now ticks every ${INTERVAL}s in the background.
+    Check any time:   $PRIMER --status      (or --watch for the live dashboard)
+    Self-diagnose:    $PRIMER --doctor
+    Remember: the machine must stay on and awake for the chain to keep going.
+EOF
