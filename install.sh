@@ -73,6 +73,8 @@ case "$(uname -s)" in
 esac
 
 have() { command -v "$1" >/dev/null 2>&1; }
+xml_escape() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+USER_NAME=${USER:-$(id -un)}   # $USER is unset in some containers and minimal images
 claude_signed_in() { claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; }
 codex_signed_in()  { codex login status 2>&1 | grep -qi '^logged in'; }
 
@@ -159,6 +161,7 @@ echo "    PATH baked: $tool_path"
 if [ "$DRY_RUN" -eq 0 ]; then
     mkdir -p "$CONFIG_DIR" "$STATE_DIR" "$RUNTIME_DIR"
     cp "$PRIMER" "$RUN_PRIMER" && chmod +x "$RUN_PRIMER"
+    echo "$INTERVAL" > "$STATE_DIR/tick-interval"   # primer.sh: heartbeat is stale after 3 missed ticks
     if [ -f "$CONFIG_FILE" ]; then
         echo "    (config exists — leaving it untouched; edit it to change tools/model)"
     else
@@ -175,13 +178,13 @@ install_mac() {
 <dict>
     <key>Label</key><string>$LABEL</string>
     <key>ProgramArguments</key>
-    <array><string>/bin/sh</string><string>$RUN_PRIMER</string></array>
+    <array><string>/bin/sh</string><string>$(xml_escape "$RUN_PRIMER")</string></array>
     <key>RunAtLoad</key><true/>
     <key>StartInterval</key><integer>$INTERVAL</integer>
     <key>EnvironmentVariables</key>
-    <dict><key>PATH</key><string>$tool_path</string></dict>
+    <dict><key>PATH</key><string>$(xml_escape "$tool_path")</string></dict>
     <key>StandardOutPath</key><string>/dev/null</string>
-    <key>StandardErrorPath</key><string>$LOG_FILE</string>
+    <key>StandardErrorPath</key><string>$(xml_escape "$LOG_FILE")</string>
 </dict>
 </plist>"
     echo "==> launchd:    $plist"
@@ -210,8 +213,8 @@ Description=session-primer — keep AI CLI usage windows chained open
 
 [Service]
 Type=oneshot
-Environment=PATH=$tool_path
-ExecStart=/bin/sh $RUN_PRIMER"
+Environment=\"PATH=$tool_path\"
+ExecStart=/bin/sh \"$RUN_PRIMER\""
         timer_content="[Unit]
 Description=session-primer tick
 
@@ -230,13 +233,13 @@ WantedBy=timers.target"
         printf '%s\n' "$timer_content"   > "$unit_dir/session-primer.timer"
         # Without lingering, a user's systemd instance (and its timers) only runs
         # while that user is logged in — useless on a headless server.
-        if loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then
-            echo "==> Lingering already enabled for $USER"
-        elif loginctl enable-linger "$USER" 2>/dev/null || sudo -n loginctl enable-linger "$USER" 2>/dev/null; then
-            echo "==> Enabled lingering for $USER (timer runs even when you are logged out)"
+        if loginctl show-user "$USER_NAME" 2>/dev/null | grep -q '^Linger=yes'; then
+            echo "==> Lingering already enabled for $USER_NAME"
+        elif loginctl enable-linger "$USER_NAME" 2>/dev/null || sudo -n loginctl enable-linger "$USER_NAME" 2>/dev/null; then
+            echo "==> Enabled lingering for $USER_NAME (timer runs even when you are logged out)"
         else
             echo "!!  Could not enable lingering. Run this once, or the timer stops when you log out:"
-            echo "    sudo loginctl enable-linger $USER"
+            echo "    sudo loginctl enable-linger $USER_NAME"
         fi
         systemctl --user daemon-reload
         systemctl --user enable --now session-primer.timer
@@ -244,7 +247,7 @@ WantedBy=timers.target"
     else
         have crontab || { echo "error: neither a usable systemd user session nor crontab found" >&2; exit 1; }
         echo "==> cron:       every minute (systemd user session not available here)"
-        cron_line="* * * * * PATH=$tool_path /bin/sh $RUN_PRIMER >/dev/null 2>>$LOG_FILE # session-primer"
+        cron_line="* * * * * PATH='$tool_path' /bin/sh '$RUN_PRIMER' >/dev/null 2>>'$LOG_FILE' # session-primer"
         if [ "$DRY_RUN" -eq 1 ]; then echo "$cron_line"; return 0; fi
         ( crontab -l 2>/dev/null | grep -v '# session-primer$'; echo "$cron_line" ) | crontab -
         echo "==> Installed. Verify with: crontab -l"

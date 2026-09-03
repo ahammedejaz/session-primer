@@ -15,11 +15,12 @@
 #
 # This does NOT create quota. Weekly caps still apply. ~5 triggers/day/tool.
 #
-# Usage: primer.sh [--dry-run] [--sync] [--tool claude|codex] [--status] [--watch]
+# Usage: primer.sh [--dry-run] [--sync] [--tool claude|codex] [--status] [--doctor]
+#                  [--watch] [--set-end TOOL HH:MM]
 
 set -u
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/session-primer"
 CONFIG_FILE="$CONFIG_DIR/primer.conf"
@@ -90,7 +91,9 @@ while [ $# -gt 0 ]; do
         --doctor)  DOCTOR=1 ;;
         --watch)   WATCH=1 ;;
         --watch-once) WATCH_ONCE=1 ;;
-        --set-end) SET_TOOL="${2:-}"; SET_TIME="${3:-}"; shift 2 ;;
+        --set-end)
+            [ $# -ge 3 ] || { echo "error: --set-end needs TOOL and HH:MM (e.g. --set-end claude 21:20)" >&2; exit 2; }
+            SET_TOOL="$2"; SET_TIME="$3"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -141,6 +144,15 @@ tick_age() {
     [ -n "$_lt" ] && echo $(( $(date +%s) - _lt ))
 }
 
+# The heartbeat counts as stale after three missed ticks (install.sh records
+# the interval it scheduled), never sooner than 180s.
+stale_after() {
+    _iv=$(read_epoch_file "$STATE_DIR/tick-interval")
+    _st=$(( ${_iv:-60} * 3 ))
+    [ "$_st" -lt 180 ] && _st=180
+    echo "$_st"
+}
+
 if [ -n "$SET_TOOL" ]; then
     case "$SET_TOOL" in claude|codex) ;; *) echo "error: --set-end expects claude or codex" >&2; exit 2 ;; esac
     _e=$(today_at "$SET_TIME")
@@ -153,11 +165,15 @@ if [ -n "$SET_TOOL" ]; then
 fi
 
 # Run "$@" but kill it after $1 seconds (portable; macOS has no `timeout`).
+# The command runs as a background job; a function passed here should `exec`
+# its final command so the kill reaches the real process, not a wrapper shell.
+# The watchdog's stdio is detached: otherwise its sleep keeps the caller's
+# stdout pipe open and a $(...) around this function blocks for the full timeout.
 run_with_timeout() {
     _secs=$1; shift
     "$@" &
     _cmd_pid=$!
-    ( sleep "$_secs" && kill "$_cmd_pid" 2>/dev/null ) &
+    ( sleep "$_secs" && kill "$_cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
     _watchdog_pid=$!
     wait "$_cmd_pid"
     _rc=$?
@@ -171,7 +187,7 @@ run_with_timeout() {
 # consumes as few tokens as possible. stream-json makes Claude Code emit a
 # rate_limit_event with the provider's own view of the usage windows.
 run_claude() {
-    claude -p "$PROMPT" \
+    exec claude -p "$PROMPT" \
         --model "$CLAUDE_MODEL" \
         --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
         --setting-sources project \
@@ -203,7 +219,7 @@ run_codex() {
     set -- codex exec --skip-git-repo-check -C "$BLANK_DIR"
     [ -n "$CODEX_MODEL" ]  && set -- "$@" -m "$CODEX_MODEL"
     [ -n "$CODEX_EFFORT" ] && set -- "$@" -c "model_reasoning_effort=\"$CODEX_EFFORT\""
-    "$@" "$PROMPT"
+    exec "$@" "$PROMPT"
 }
 
 # account/rateLimits/read over the app-server's stdio JSON-RPC: the provider's
@@ -215,14 +231,18 @@ codex_rpc_raw() {
         printf '%s\n' '{"jsonrpc":"2.0","method":"initialized"}'
         printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}'
         sleep 4
-    ) | codex app-server 2>/dev/null | grep '"id":2' | head -n 1
+    ) | codex app-server 2>/dev/null | grep '"id":2[^0-9]' | head -n 1
 }
 
 CX_STATE=""; CX_PLAN=""; CX_ERR=""; CX_5H_RESET=""; CX_5H_UTIL=""; CX_7D_RESET=""; CX_7D_UTIL=""
 # Sets CX_STATE: ok | no-5h-window | unavailable
 codex_rate_read() {
     CX_STATE="unavailable"; CX_PLAN=""; CX_ERR=""; CX_5H_RESET=""; CX_5H_UTIL=""; CX_7D_RESET=""; CX_7D_UTIL=""
-    _raw=$(run_with_timeout 30 codex_rpc_raw)
+    # Capture to a file rather than $(...): if the app-server hangs past the
+    # timeout, the orphaned pipeline must not keep this tick blocked.
+    _rpc_file="$STATE_DIR/last-codex-rpc.out"
+    run_with_timeout 30 codex_rpc_raw > "$_rpc_file" 2>/dev/null
+    _raw=$(cat "$_rpc_file" 2>/dev/null)
     if [ -z "$_raw" ]; then
         CX_ERR="no response from codex app-server — not signed in?"
         return 1
@@ -290,7 +310,7 @@ status() {
     echo "Claude model: $CLAUDE_MODEL"
     _age=$(tick_age)
     if [ -n "$_age" ]; then
-        if [ "$_age" -lt 180 ]; then echo "Daemon      : alive — last tick ${_age}s ago"; else echo "Daemon      : NOT TICKING — last tick $((_age / 60))m ago (run ./primer.sh --doctor)"; fi
+        if [ "$_age" -lt "$(stale_after)" ]; then echo "Daemon      : alive — last tick ${_age}s ago"; else echo "Daemon      : NOT TICKING — last tick $((_age / 60))m ago (run ./primer.sh --doctor)"; fi
     else
         echo "Daemon      : no tick recorded yet (run ./install.sh)"
     fi
@@ -355,7 +375,8 @@ doctor() {
             export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
             if systemctl --user is-active session-primer.timer >/dev/null 2>&1; then
                 ok "scheduler: systemd user timer active"
-                if loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then ok "lingering enabled (timer survives logout)"; else warn "lingering NOT enabled — timer stops when you log out: sudo loginctl enable-linger $USER"; fi
+                _u=${USER:-$(id -un)}
+                if loginctl show-user "$_u" 2>/dev/null | grep -q '^Linger=yes'; then ok "lingering enabled (timer survives logout)"; else warn "lingering NOT enabled — timer stops when you log out: sudo loginctl enable-linger $_u"; fi
             elif crontab -l 2>/dev/null | grep -q '# session-primer$'; then ok "scheduler: cron entry present"
             else bad "scheduler: no systemd timer or cron entry — run ./install.sh"; fi ;;
         MINGW*|MSYS*|CYGWIN*)
@@ -363,7 +384,7 @@ doctor() {
     esac
     _age=$(tick_age)
     if [ -z "$_age" ]; then warn "heartbeat: no tick recorded yet (the scheduler ticks within a minute of install)"
-    elif [ "$_age" -lt 180 ]; then ok "heartbeat: last tick ${_age}s ago"
+    elif [ "$_age" -lt "$(stale_after)" ]; then ok "heartbeat: last tick ${_age}s ago"
     else bad "heartbeat: last tick $((_age / 60))m ago — the scheduler is not running the script (see README troubleshooting)"; fi
     _now=$(date +%s)
     for t in $TOOLS; do
@@ -408,7 +429,7 @@ draw_bar() {
 daemon_state() {
     _age=$(tick_age)
     if [ -n "$_age" ]; then
-        if [ "$_age" -lt 180 ]; then _hb=" · last tick ${_age}s ago"; else _hb=" · LAST TICK $((_age / 60))m AGO"; fi
+        if [ "$_age" -lt "$(stale_after)" ]; then _hb=" · last tick ${_age}s ago"; else _hb=" · LAST TICK $((_age / 60))m AGO"; fi
     else
         _hb=" · no tick yet"
     fi
@@ -531,11 +552,12 @@ else
     mkdir "$LOCK_DIR" 2>/dev/null || exit 0
     echo $$ > "$LOCK_DIR/pid"
 fi
-trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+trap 'rm -rf "$LOCK_DIR"' EXIT
+trap 'rm -rf "$LOCK_DIR"; trap - EXIT; exit 1' INT TERM
 
 # ---- ticks ------------------------------------------------------------------
 now=$(date +%s)
-echo "$now" > "$STATE_DIR/last-tick"
+[ "$DRY_RUN" -eq 1 ] || echo "$now" > "$STATE_DIR/last-tick"
 
 in_backoff() {   # $1 tool
     _lf=$(read_epoch_file "$STATE_DIR/last-fail-$1")
