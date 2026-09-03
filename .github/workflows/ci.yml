@@ -91,10 +91,20 @@ jobs:
         run: |
           MSYS_NO_PATHCONV=1 schtasks /Query /TN session-primer /V /FO LIST | grep -iE 'TaskName|Status|Next Run Time|Task To Run' 
           echo "--- launcher"; cat ~/.local/share/session-primer/run-hidden.vbs
+          echo "--- diagnostics: the exact command the launcher runs, executed directly"
+          BASHW="$(command -v bash)"; echo "bash: $BASHW -> $(cygpath -w "$BASHW")"
+          rm -f ~/.local/state/session-primer/last-tick
+          "$BASHW" -l -c "export PATH='$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH'; '$HOME/.local/share/session-primer/primer.sh' --dry-run" || echo "direct run exit=$?"
+          echo "--- diagnostics: launcher via cscript (errors visible)"
+          rm -f ~/.local/state/session-primer/last-tick
+          cscript //nologo "$(cygpath -w ~/.local/share/session-primer/run-hidden.vbs)" || echo "cscript exit=$?"
+          for i in $(seq 1 30); do [ -f ~/.local/state/session-primer/last-tick ] && break; sleep 2; done
+          if [ -f ~/.local/state/session-primer/last-tick ]; then echo "cscript launcher ran the tick"; else echo "cscript launcher did NOT run the tick"; fi
+          echo "--- launcher via wscript //B (the way Task Scheduler runs it)"
           rm -f ~/.local/state/session-primer/last-tick
           wscript.exe //B "$(cygpath -w ~/.local/share/session-primer/run-hidden.vbs)"
-          for i in $(seq 1 45); do [ -f ~/.local/state/session-primer/last-tick ] && break; sleep 2; done
-          test -f ~/.local/state/session-primer/last-tick && echo "hidden launcher ran the tick"
+          for i in $(seq 1 30); do [ -f ~/.local/state/session-primer/last-tick ] && break; sleep 2; done
+          if [ -f ~/.local/state/session-primer/last-tick ]; then echo "hidden launcher ran the tick"; else echo "hidden launcher did NOT run the tick"; ls -la ~/.local/state/session-primer/; exit 1; fi
           echo "--- schtasks /Run (may not be allowed in a CI session; informational)"
           rm -f ~/.local/state/session-primer/last-tick
           MSYS_NO_PATHCONV=1 schtasks /Run /TN session-primer || true
