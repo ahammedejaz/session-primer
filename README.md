@@ -1,8 +1,22 @@
 # session-primer
 
+[![CI](https://github.com/ahammedejaz/session-primer/actions/workflows/ci.yml/badge.svg)](https://github.com/ahammedejaz/session-primer/actions/workflows/ci.yml)
+
 Keep your AI coding CLI's **5-hour usage window** permanently chained open, so the next reset is never more than 5 hours away — and never lands in the middle of your deepest task.
 
-Works with **Claude Code** (`claude`) and **OpenAI Codex CLI** (`codex`). Runs on a free always-on VM, or on your own Mac, Windows or Linux machine. Zero dependencies beyond the CLIs you already have.
+Works with **Claude Code** (`claude`) and **OpenAI Codex CLI** (`codex`). Runs on a free always-on VM, or on your own Mac, Windows or Linux machine. Plain POSIX shell; no Node.js, no Python, nothing to install but the CLIs themselves — and `setup.sh` installs those for you.
+
+## Quick start
+
+```sh
+git clone https://github.com/ahammedejaz/session-primer.git
+cd session-primer
+./setup.sh
+```
+
+That one command installs Claude Code and/or Codex if they are missing (official installers), asks you to sign in if you are not, installs the background daemon, sends the first probe and shows you your current window. **Windows:** run it from **Git Bash**, or double-click `setup.cmd`. Every step is idempotent — re-run it any time.
+
+Read [Choose where to run it](#choose-where-to-run-it) first: the machine must stay on 24/7.
 
 ```
  windows chain forever, with no human involved:
@@ -128,7 +142,7 @@ ssh oci
 
 (Oracle's Ubuntu images use the user `ubuntu`, which has passwordless `sudo`.)
 
-### Step 3 — Clone and bootstrap
+### Step 3 — Clone and run the guided setup
 
 On the VM:
 
@@ -136,46 +150,20 @@ On the VM:
 sudo timedatectl set-timezone Asia/Kolkata     # your timezone — so logs and the dashboard show local time
 git clone https://github.com/ahammedejaz/session-primer.git
 cd session-primer
-./setup-vm.sh
+./setup.sh
 ```
 
-`setup-vm.sh` is idempotent and does four things:
-- adds a 1 GB swap file if the VM has under 2 GB RAM and no swap (Micro shapes);
-- installs **Claude Code** with Anthropic's official native installer (`curl -fsSL https://claude.ai/install.sh | bash`, no Node.js needed);
-- installs **Codex CLI** as a standalone binary from OpenAI's official GitHub release for your CPU architecture (no Node.js needed);
-- puts `~/.local/bin` on your PATH for future shells.
+`setup.sh` walks you through everything, and every step is idempotent:
 
-Skip a CLI you do not use with `--skip-codex` or `--skip-claude`. Open a new shell afterwards (or `source ~/.bashrc`) so `claude` and `codex` are on PATH.
+1. **Swap** — adds a 1 GB swap file if the VM has under 2 GB RAM (Micro shapes).
+2. **Claude Code** — Anthropic's official native installer (`curl -fsSL https://claude.ai/install.sh | bash`, no Node.js).
+3. **Codex CLI** — the standalone binary from OpenAI's official GitHub release for your CPU (no Node.js). Skip either with `--skip-codex` / `--skip-claude`.
+4. **Sign-in** — for each CLI that is not signed in, it offers to run the login right there. On a headless VM both CLIs print a URL: open it on your phone or laptop, sign in, and (for Claude) **paste the code it gives you back into the VM terminal**. For Codex it uses device login (`codex login --device-auth`) automatically when no desktop is detected. Choose the **subscription** login for Claude, not an API key — API keys are pay-per-token and have no 5-hour window, which defeats the purpose.
+5. **Daemon** — hands off to `./install.sh`, which writes `~/.config/session-primer/primer.conf`, copies `primer.sh` to `~/.local/share/session-primer/` (so you can move or delete the clone), creates a **systemd user timer** (every 60 s, `Persistent=true` so a missed tick runs after a reboot) with the CLI locations baked into its PATH, enables **lingering** (`loginctl enable-linger` — essential on a server, otherwise user timers only run while you are logged in over SSH), sends the first probe, and prints your status.
 
-### Step 4 — Sign in to Claude and Codex
+Only have one of the two subscriptions? Sign in to that one; the daemon handles a missing or unsigned tool gracefully and keeps telling you what to do in `--status` (see [Codex specifics](#codex-specifics)).
 
-Both CLIs support signing in on a machine with no browser: they print a URL you open on your phone or laptop.
-
-```sh
-claude auth login
-```
-Choose the subscription login (not an API key — API keys are pay-per-token and have no 5-hour window, which defeats the purpose). Open the printed URL on any device, sign in, and **paste the code it gives you back into the VM terminal**. Verify with `claude auth status` — you want `"loggedIn": true` and your `subscriptionType`.
-
-```sh
-codex login --device-auth
-```
-Open the URL, enter the short code shown, approve. Verify with `codex login status`.
-
-Only have one of the two? Sign in to that one; the daemon handles a missing or unsigned tool gracefully (see [Codex specifics](#codex-specifics)).
-
-### Step 5 — Install the daemon
-
-```sh
-./install.sh --tools "claude codex"      # or just "claude"
-```
-
-What it does:
-- writes `~/.config/session-primer/primer.conf` (tools, models — editable any time; never overwritten);
-- copies `primer.sh` to `~/.local/share/session-primer/` and runs the daemon from there, so you can move or delete the clone without breaking it;
-- creates a **systemd user timer** (`session-primer.timer`, every 60 s, `Persistent=true` so a missed tick runs after a reboot) with the CLI locations baked into its PATH;
-- enables **lingering** for your user (`loginctl enable-linger`) — essential on a server: without it, user timers only run while you are logged in over SSH.
-
-If you use Codex with a ChatGPT-account login, set the trigger model now (see [Codex specifics](#codex-specifics) for why):
+If you use Codex with a ChatGPT-account login, set the trigger model afterwards (see [Codex specifics](#codex-specifics) for why):
 
 ```sh
 nano ~/.config/session-primer/primer.conf     # CODEX_MODEL="gpt-5.4-mini"  CODEX_EFFORT="low"
@@ -194,35 +182,21 @@ ssh -t oci ~/session-primer/primer.sh --watch        # live dashboard (ctrl+c ex
 
 Read the [24/7 warning](#choose-where-to-run-it) first. On a Mac the daemon runs as a launchd user agent; it starts at login and ticks every minute, but **pauses whenever the Mac sleeps**.
 
-### 1. Install the CLIs you use
-
-```sh
-curl -fsSL https://claude.ai/install.sh | bash     # Claude Code (official installer)
-npm install -g @openai/codex                       # Codex (needs Node.js; or: brew install codex)
-```
-
-### 2. Sign in
-
-```sh
-claude auth login      # opens your browser; choose the subscription login, not an API key
-codex login            # opens your browser
-```
-
-Verify with `claude auth status` and `codex login status`.
-
-### 3. Clone and install
+### 1. Clone and run the guided setup
 
 ```sh
 git clone https://github.com/ahammedejaz/session-primer.git
 cd session-primer
-./install.sh                     # auto-detects which CLIs you have; or --tools "claude"
+./setup.sh
 ```
 
-This creates `~/Library/LaunchAgents/com.session-primer.plist` (60-second `StartInterval`, starts at login) and runs a copy of the script from `~/.local/share/session-primer/`. The copy matters: launchd agents cannot read `~/Documents` (macOS privacy protection), so a job pointing into a clone under Documents fails with "Operation not permitted". The installer also bakes the CLI locations into the job's PATH, because launchd does not use your shell's PATH.
+It installs Claude Code (official installer) and Codex (official release binary — no Node.js, no Homebrew) if they are missing, opens your browser to sign in to whichever is not signed in (choose the **subscription** login for Claude, not an API key), then installs the daemon and shows your status. Skip a CLI you do not use with `--skip-codex` / `--skip-claude`.
+
+The daemon is a launchd user agent (`~/Library/LaunchAgents/com.session-primer.plist`, 60-second interval, starts at login) that runs a copy of the script from `~/.local/share/session-primer/`. The copy matters: launchd agents cannot read `~/Documents` (macOS privacy protection). The installer also bakes the CLI locations into the job's PATH, because launchd does not use your shell's PATH. If macOS asks whether `claude` may use your Keychain the first time the daemon triggers, click **Always Allow**.
 
 Using Codex with a ChatGPT-account login? Set `CODEX_MODEL` in `~/.config/session-primer/primer.conf` — see [Codex specifics](#codex-specifics).
 
-### 4. Keep the Mac awake — this is the whole game
+### 2. Keep the Mac awake — this is the whole game
 
 Pick one:
 
@@ -238,58 +212,41 @@ Then go to [Verify it is working](#verify-it-is-working).
 
 ## Setup C — Your own Windows PC
 
-Read the [24/7 warning](#choose-where-to-run-it) first. On Windows the daemon runs as a **Task Scheduler** task that starts the script every minute under **Git Bash**, hidden (no console window flashing).
+Read the [24/7 warning](#choose-where-to-run-it) first. On Windows the daemon runs as a **Task Scheduler** task that starts the script every minute under **Git Bash**, hidden (no console window flashing), and allowed to run on battery.
 
-> **Status:** the Windows path was written carefully but has **not yet been verified on a real Windows machine by the author**. If you try it, please open an issue with what happened — including "it just worked".
+> **Tested where?** The whole Windows flow — CLI installation, task registration, the hidden launcher actually running a tick — runs in this repo's CI on GitHub's real Windows runners (see the badge at the top). The only part CI cannot do is sign in to an account, which is your browser login. If anything still surprises you, please open an issue.
 
-### 1. Prerequisites
+### 1. Install Git for Windows
 
-- **Git for Windows** — [git-scm.com/download/win](https://git-scm.com/download/win). This provides **Git Bash**, which runs the scripts. Claude Code on Windows requires it anyway.
-- **Node.js** (LTS) — only if you want Codex, which installs through npm.
+[git-scm.com/download/win](https://git-scm.com/download/win) — defaults are fine. It provides **Git Bash**, which runs the scripts (Claude Code on Windows requires it anyway). Nothing else is needed: no Node.js, no Python.
 
-### 2. Install the CLIs you use
+### 2. Clone and run the guided setup
 
-In **PowerShell**:
-
-```powershell
-irm https://claude.ai/install.ps1 | iex        # Claude Code (official installer)
-npm install -g @openai/codex                   # Codex
-```
-
-Close and reopen your terminal so the new commands are on PATH.
-
-### 3. Sign in
-
-```powershell
-claude auth login      # opens your browser; choose the subscription login, not an API key
-codex login            # opens your browser
-```
-
-Verify with `claude auth status` and `codex login status`.
-
-### 4. Clone and install — from Git Bash
-
-Open **Git Bash** (Start menu → "Git Bash"), then:
+Open **Git Bash** (Start menu → "Git Bash"):
 
 ```sh
 git clone https://github.com/ahammedejaz/session-primer.git
 cd session-primer
-./install.sh                     # auto-detects which CLIs you have; or --tools "claude"
+./setup.sh
 ```
 
-This copies the script to `~/.local/share/session-primer/`, writes a tiny `run-hidden.vbs` launcher there, and registers a Task Scheduler task named `session-primer` that runs the launcher every minute. The launcher starts Git Bash invisibly with the CLI locations on PATH. The task runs **while you are logged in** (no password storage needed). If `schtasks` is refused, run Git Bash as Administrator once.
+Or, if you prefer clicking: clone with any Git client and **double-click `setup.cmd`** — it opens Git Bash and runs the same setup.
+
+It installs Claude Code (Anthropic's official PowerShell installer) and Codex (OpenAI's official Windows binary) if they are missing, opens your browser to sign in to whichever is not signed in (choose the **subscription** login for Claude, not an API key), registers the Task Scheduler task, sends the first probe and shows your status.
+
+What gets created: the script copy and a tiny `run-hidden.vbs` launcher in `~/.local/share/session-primer/` (that is `C:\Users\<you>\.local\share\session-primer`), and a Task Scheduler task named `session-primer` (repeats every minute, allowed on battery, runs while you are logged in — no password storage). If registration is refused, start Git Bash with **Run as administrator** once and re-run `./setup.sh`.
 
 Using Codex with a ChatGPT-account login? Set `CODEX_MODEL` in `~/.config/session-primer/primer.conf` — see [Codex specifics](#codex-specifics).
 
-### 5. Keep the PC awake — this is the whole game
+### 3. Keep the PC awake — this is the whole game
 
 *Settings → System → Power & battery → Screen, sleep & hibernate timeouts* → set **"Make my device sleep after"** to **Never** when plugged in (screen off is fine). Closing a laptop lid usually sleeps it: *Control Panel → Power Options → Choose what closing the lid does* → **Do nothing** when plugged in.
 
 Without this, the chain pauses whenever the PC sleeps and restarts fresh when it wakes.
 
-### 6. Verify
+### 4. Verify
 
-In Git Bash: `./primer.sh --status`. In PowerShell or cmd: `schtasks /Query /TN session-primer` should show the task with a next run time about a minute away. Then see [Verify it is working](#verify-it-is-working).
+In Git Bash: `./primer.sh --status` (or `--doctor`). In PowerShell or cmd: `schtasks /Query /TN session-primer` should show the task with a next run time about a minute away. Then see [Verify it is working](#verify-it-is-working).
 
 **Alternative:** if you already use WSL2, the Linux instructions (Setup D) work inside it, but WSL's own lifecycle (it stops when idle) makes the Git Bash route more reliable.
 
@@ -297,19 +254,24 @@ In Git Bash: `./primer.sh --status`. In PowerShell or cmd: `schtasks /Query /TN 
 
 ## Setup D — Your own Linux machine
 
-Read the [24/7 warning](#choose-where-to-run-it) first. Then follow [Setup A, Steps 3–5](#step-3--clone-and-bootstrap) on the machine itself (skip the timezone command if it is already right). `setup-vm.sh` works on any Debian/Ubuntu-style desktop; on other distributions install the two CLIs by hand first. Disable suspend in your desktop's power settings (or `sudo systemctl mask sleep.target suspend.target`).
+Read the [24/7 warning](#choose-where-to-run-it) first. Then follow [Setup A, Step 3](#step-3--clone-and-run-the-guided-setup) on the machine itself (skip the timezone command if it is already right). `setup.sh` works on any Linux with `curl` and `tar`; on a desktop it opens your browser for sign-in instead of the device flow. If your distribution has no systemd user session, the installer falls back to cron automatically. Disable suspend in your desktop's power settings (or `sudo systemctl mask sleep.target suspend.target`).
 
 ---
 
 ## Verify it is working
 
+`setup.sh` / `install.sh` already sent the first probe and printed the status. Any time later:
+
 ```sh
 ./primer.sh --status
+./primer.sh --doctor     # checks CLIs, sign-in, scheduler, heartbeat; explains what to fix
 ```
 
-Within a minute of install the first tick sends one probe per tool, and you should see something like:
+You should see something like:
 
 ```
+Daemon      : alive — last tick 34s ago
+
 claude: window OPEN until 2026-09-03 21:20 (4h 11m left) — next trigger at expiry
         5h used 14% · weekly used 6% (resets 2026-09-09 23:30) · provider data from 16:56
 codex:  window OPEN until 2026-09-03 21:35 (4h 26m left) — next trigger at expiry
@@ -338,7 +300,8 @@ Then leave it alone. The proof comes at the first expiry: the log gains a `trigg
 All from the clone directory (or `~/.local/share/session-primer/primer.sh`, the running copy):
 
 ```sh
-./primer.sh --status              # window state per tool, provider usage, recent log
+./primer.sh --status              # window state per tool, provider usage, heartbeat, recent log
+./primer.sh --doctor              # self-diagnosis: CLIs, sign-in, scheduler, heartbeat, with fixes
 ./primer.sh --watch               # live dashboard: bars, countdowns, daemon health (ctrl+c exits)
 ./primer.sh --dry-run             # what the next tick would do, sending nothing
 ./primer.sh --sync                # re-check the provider now (claude: one tiny probe; codex: free read)
@@ -350,7 +313,7 @@ The log records only events — triggers, probes, adopted windows, failures. Sil
 
 **Changing settings:** edit `~/.config/session-primer/primer.conf`; it takes effect on the next tick. No reinstall needed. Re-run `./install.sh` only after pulling a new version of the scripts (it refreshes the running copy).
 
-**Updating:** `git pull && ./install.sh`.
+**Updating:** `git pull && ./install.sh` (keeps your config; refreshes the running copy).
 
 **Uninstall:**
 
@@ -386,6 +349,8 @@ Files: state in `~/.local/state/session-primer/` (`window-end-*`, `rate-*`, `cod
 - **Cost.** Codex's own system prompt makes even a trivial turn ~10k tokens; still a rounding error against a 5-hour window.
 
 ## Troubleshooting
+
+Start with `./primer.sh --doctor` — it checks the usual suspects and prints the fix next to each failure. If it says the heartbeat is stale, the scheduler is not running the script: see the platform rows below.
 
 | Symptom | Cause | Fix |
 |---|---|---|

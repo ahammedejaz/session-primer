@@ -56,9 +56,11 @@ jobs:
           echo "--- dry-run"; ./primer.sh --dry-run
           echo "--- watch frame"; ./primer.sh --watch-once
           echo "--- doctor (expected to report NOT signed in)"
-          if ./primer.sh --doctor; then echo "doctor should have failed on sign-in"; exit 1; fi
-          ./primer.sh --doctor | grep -q 'claude NOT signed in'
-          ./primer.sh --doctor | grep -q 'codex NOT signed in'
+          if ./primer.sh --doctor > doctor.txt; then cat doctor.txt; echo "doctor should have failed on sign-in"; exit 1; fi
+          cat doctor.txt
+          grep -q 'claude NOT signed in' doctor.txt
+          grep -q 'codex NOT signed in' doctor.txt
+          grep -q 'heartbeat: last tick' doctor.txt
 
       - name: The first tick ran and recorded what went wrong
         run: |
