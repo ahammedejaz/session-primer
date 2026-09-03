@@ -1,0 +1,32 @@
+# session-primer configuration
+# Copy to ~/.config/session-primer/primer.conf (install.sh does this for you)
+# This file is sourced by primer.sh — keep it plain shell variable assignments.
+
+# Which CLIs to keep primed, space-separated. Supported: claude codex
+TOOLS="claude"
+
+# Model for the Claude Code trigger. haiku is the cheapest quota-wise.
+CLAUDE_MODEL="haiku"
+
+# Model for the codex trigger. Empty = whatever your codex config defaults to.
+# NOTE: ChatGPT-account auth only supports certain models; if the trigger fails
+# with "model is not supported", set one your account lists (e.g. a mini model).
+CODEX_MODEL=""
+
+# Reasoning effort for the codex trigger. Empty = your codex config default.
+CODEX_EFFORT="low"
+
+# The trigger message. Keep it trivial — its only job is to start the clock.
+PROMPT="Reply with exactly: ok"
+
+# Provider usage-window length in hours. Both Claude and Codex use 5 today.
+WINDOW_HOURS=5
+
+# Kill a hung trigger after this many seconds.
+TIMEOUT_SECS=180
+
+# After a failed trigger (auth expired, offline), wait this long before retrying.
+FAIL_RETRY_SECS=600
+
+# Codex: re-read the provider's usage windows this often (a free read, no quota).
+RATE_REFRESH_SECS=300
